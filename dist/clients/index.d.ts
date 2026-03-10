@@ -1,0 +1,10 @@
+import { fetchNasa } from "./nasa";
+import { fetchPexels } from "./pexels";
+import { fetchPicsum } from "./picsum";
+import { fetchPixabay } from "./pixabay";
+import { fetchUnsplash } from "./unsplash";
+import type { ApiClientRequest, ClientResponse, RemoteWallpaperSource } from "../types/wallpaper";
+export type SourceClient = (request: ApiClientRequest) => Promise<ClientResponse>;
+export declare const clients: Record<RemoteWallpaperSource, SourceClient>;
+export declare function getClient(source: RemoteWallpaperSource): SourceClient;
+export { fetchUnsplash, fetchPexels, fetchPixabay, fetchNasa, fetchPicsum };

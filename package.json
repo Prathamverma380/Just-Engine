@@ -1,0 +1,11 @@
+{
+  "name": "wallpaper-engine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Backend-only wallpaper engine that aggregates multiple free wallpaper/image sources behind a single API.",
+  "scripts": {
+    "build": "npx --yes -p typescript tsc -p tsconfig.json",
+    "check": "npx --yes -p typescript tsc -p tsconfig.json --noEmit",
+    "test:engine": "npm run build && node dist/test-runner.js"
+  }
+}

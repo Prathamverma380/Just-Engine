@@ -1,0 +1,17 @@
+import type { Wallpaper } from "../types/wallpaper";
+type SubscriptionState = "free" | "premium";
+export declare function saveFavorite(wallpaper: Wallpaper): void;
+export declare function removeFavorite(id: string): void;
+export declare function getFavorites(): Wallpaper[];
+export declare function isFavorite(id: string): boolean;
+export declare function savePreference(key: string, value: unknown): void;
+export declare function getPreference<T>(key: string): T | undefined;
+export declare function getDownloadHistory(): Wallpaper[];
+export declare function addToDownloadHistory(wallpaper: Wallpaper): void;
+export declare function addSearchHistory(query: string): void;
+export declare function getSearchHistory(): string[];
+export declare function setSubscriptionState(state: SubscriptionState): void;
+export declare function getSubscriptionState(): SubscriptionState;
+export declare function consumeFirstLaunch(): boolean;
+export declare function storageClear(): void;
+export {};

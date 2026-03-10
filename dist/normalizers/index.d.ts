@@ -1,0 +1,10 @@
+import { normalizeNasa } from "./nasa";
+import { normalizePexels } from "./pexels";
+import { normalizePicsum } from "./picsum";
+import { normalizePixabay } from "./pixabay";
+import { normalizeUnsplash } from "./unsplash";
+import type { ClientResponse, RemoteWallpaperSource, Wallpaper } from "../types/wallpaper";
+export type SourceNormalizer = (response: ClientResponse<any>) => Wallpaper[];
+export declare const normalizers: Record<RemoteWallpaperSource, SourceNormalizer>;
+export declare function getNormalizer(source: RemoteWallpaperSource): SourceNormalizer;
+export { normalizeUnsplash, normalizePexels, normalizePixabay, normalizeNasa, normalizePicsum };

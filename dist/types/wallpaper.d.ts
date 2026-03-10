@@ -1,0 +1,134 @@
+export declare const WALLPAPER_SOURCES: readonly ["unsplash", "pexels", "pixabay", "nasa", "picsum", "local"];
+export declare const REMOTE_WALLPAPER_SOURCES: readonly ["unsplash", "pexels", "pixabay", "nasa", "picsum"];
+export declare const WALLPAPER_CATEGORIES: readonly ["all", "nature", "abstract", "space", "dark", "minimal", "city", "animals", "illustration", "gradient", "seasonal"];
+export type WallpaperSource = (typeof WALLPAPER_SOURCES)[number];
+export type RemoteWallpaperSource = (typeof REMOTE_WALLPAPER_SOURCES)[number];
+export type WallpaperCategory = (typeof WALLPAPER_CATEGORIES)[number];
+export type RequestMode = "search" | "featured" | "daily" | "category";
+export type WallpaperVariant = "thumbnail" | "preview" | "full" | "original";
+export interface WallpaperUrls {
+    thumbnail: string;
+    preview: string;
+    full: string;
+    original: string;
+}
+export interface WallpaperMetadata {
+    width: number;
+    height: number;
+    color: string;
+    blurHash: string;
+    description: string;
+    tags: string[];
+}
+export interface Photographer {
+    name: string;
+    url: string;
+    avatar?: string;
+}
+export interface Wallpaper {
+    id: string;
+    source: WallpaperSource;
+    sourceId: string;
+    urls: WallpaperUrls;
+    metadata: WallpaperMetadata;
+    photographer: Photographer;
+    category: string;
+    isFavorite: boolean;
+    downloadedAt: number | null;
+    cachedAt: number;
+}
+export interface SearchQuery {
+    query: string;
+    category?: string;
+    page?: number;
+    perPage?: number;
+    mode?: RequestMode;
+}
+export interface ApiClientRequest {
+    query: string;
+    category: string;
+    page: number;
+    perPage: number;
+    mode: RequestMode;
+}
+export interface ClientResponse<T = unknown> {
+    source: RemoteWallpaperSource;
+    data: T;
+    fetchedAt: number;
+    latencyMs: number;
+    request: ApiClientRequest;
+}
+export interface CacheEntry<T> {
+    key: string;
+    data: T;
+    createdAt: number;
+    expiresAt: number;
+    staleAt: number;
+    lastAccessedAt: number;
+}
+export interface CacheLookupResult<T> {
+    data: T;
+    state: "fresh" | "stale";
+}
+export interface QuotaLimits {
+    minute?: number;
+    hourly?: number;
+    monthly?: number;
+    reserveRatio: number;
+    requiresKey: boolean;
+}
+export interface SourceQuotaSnapshot {
+    source: WallpaperSource;
+    healthy: boolean;
+    configured: boolean;
+    remaining: number | "infinite";
+    latency: number | null;
+    minuteRemaining?: number | "infinite";
+    hourlyRemaining?: number | "infinite";
+    monthlyRemaining?: number | "infinite";
+    totalRequests: number;
+    failures: number;
+}
+export interface RoutingDecision {
+    source: RemoteWallpaperSource;
+    reason: string;
+    chain: RemoteWallpaperSource[];
+}
+export interface CacheStats {
+    size: number;
+    hits: number;
+    misses: number;
+    staleHits: number;
+    writes: number;
+    hitRate: number;
+    oldestEntry: number | null;
+}
+export interface EngineHealthReport {
+    unsplash: SourceQuotaSnapshot;
+    pexels: SourceQuotaSnapshot;
+    pixabay: SourceQuotaSnapshot;
+    nasa: SourceQuotaSnapshot;
+    picsum: SourceQuotaSnapshot;
+    cache: CacheStats;
+    overall: string;
+}
+export interface EngineStats {
+    totalRequests: number;
+    cacheHits: number;
+    cacheMisses: number;
+    avgResponseFresh: number;
+    avgResponseCached: number;
+    apiUsage: Record<RemoteWallpaperSource, number>;
+    errors: number;
+    uptime: string;
+}
+export interface DownloadResult {
+    filePath: string;
+    bytesWritten: number;
+    contentType: string;
+}
+export interface SharePayload {
+    title: string;
+    text: string;
+    url: string;
+}
