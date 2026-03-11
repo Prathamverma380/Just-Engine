@@ -1,5 +1,5 @@
 import { API_KEYS, REQUEST_DEFAULTS } from "../config";
-import { fetchJson, retry, toQueryString } from "../utils";
+import { fetchJsonDetailed, retry, toQueryString } from "../utils";
 import type { ApiClientRequest, ClientResponse } from "../types/wallpaper";
 
 // Only the fields we actually use are typed here to keep the client lean.
@@ -49,9 +49,9 @@ export async function fetchUnsplash(
   });
   const url = `https://api.unsplash.com/search/photos?${query}`;
 
-  const data = await retry(
+  const result = await retry(
     () =>
-      fetchJson<UnsplashSearchResponse>(
+      fetchJsonDetailed<UnsplashSearchResponse>(
         url,
         {
           headers: {
@@ -65,9 +65,11 @@ export async function fetchUnsplash(
 
   return {
     source: "unsplash",
-    data,
+    data: result.data,
     fetchedAt: Date.now(),
     latencyMs: Date.now() - startedAt,
-    request
+    request,
+    headers: result.headers,
+    rateLimit: result.rateLimit
   };
 }

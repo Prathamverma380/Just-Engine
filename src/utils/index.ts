@@ -1,6 +1,7 @@
 import {
   type ApiClientRequest,
   type DownloadResult,
+  type RateLimitSnapshot,
   type SharePayload,
   type Wallpaper,
   type WallpaperSource,
@@ -105,6 +106,113 @@ export async function fetchJson<T>(
   init: RequestInit = {},
   timeoutMs = 8000
 ): Promise<T> {
+  const result = await fetchJsonDetailed<T>(url, init, timeoutMs);
+  return result.data;
+}
+
+function parseQuotaNumber(value: string | undefined): number | "infinite" | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized === "infinite" || normalized === "unlimited") {
+    return "infinite";
+  }
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseRateLimitResetAt(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value.trim());
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  if (parsed > 1_000_000_000_000) {
+    return Math.round(parsed);
+  }
+
+  if (parsed > 1_000_000_000) {
+    return Math.round(parsed * 1000);
+  }
+
+  return Date.now() + Math.round(parsed * 1000);
+}
+
+function readFirstHeader(headers: Record<string, string>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = headers[key];
+    if (value) {
+      return value;
+    }
+  }
+
+  return undefined;
+}
+
+export function headersToRecord(headers: Headers): Record<string, string> {
+  const record: Record<string, string> = {};
+
+  headers.forEach((value, key) => {
+    record[key.toLowerCase()] = value;
+  });
+
+  return record;
+}
+
+export function parseRateLimitSnapshot(headers: Record<string, string>): RateLimitSnapshot | null {
+  const limit = parseQuotaNumber(
+    readFirstHeader(headers, [
+      "x-ratelimit-limit",
+      "ratelimit-limit",
+      "x-rate-limit-limit",
+      "x-rate-limit-requests-limit"
+    ])
+  );
+  const remaining = parseQuotaNumber(
+    readFirstHeader(headers, [
+      "x-ratelimit-remaining",
+      "ratelimit-remaining",
+      "x-rate-limit-remaining",
+      "x-rate-limit-requests-remaining"
+    ])
+  );
+  const resetAt = parseRateLimitResetAt(
+    readFirstHeader(headers, [
+      "x-ratelimit-reset",
+      "ratelimit-reset",
+      "x-rate-limit-reset",
+      "x-rate-limit-reset-after",
+      "retry-after"
+    ])
+  );
+
+  if (limit === null && remaining === null && resetAt === null) {
+    return null;
+  }
+
+  return {
+    limit,
+    remaining,
+    resetAt
+  };
+}
+
+export async function fetchJsonDetailed<T>(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 8000
+): Promise<{ data: T; headers: Record<string, string>; rateLimit: RateLimitSnapshot | null }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -119,7 +227,13 @@ export async function fetchJson<T>(
       throw new Error(`HTTP ${response.status} for ${url}${body ? ` :: ${truncate(body, 160)}` : ""}`);
     }
 
-    return (await response.json()) as T;
+    const headers = headersToRecord(response.headers);
+
+    return {
+      data: (await response.json()) as T,
+      headers,
+      rateLimit: parseRateLimitSnapshot(headers)
+    };
   } finally {
     clearTimeout(timeoutId);
   }

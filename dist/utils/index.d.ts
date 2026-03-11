@@ -1,4 +1,4 @@
-import { type ApiClientRequest, type DownloadResult, type SharePayload, type Wallpaper, type WallpaperSource, type WallpaperVariant } from "../types/wallpaper";
+import { type ApiClientRequest, type DownloadResult, type RateLimitSnapshot, type SharePayload, type Wallpaper, type WallpaperSource, type WallpaperVariant } from "../types/wallpaper";
 export declare function formatBytes(bytes: number): string;
 export declare function isValidUrl(value: string): boolean;
 export declare function generateId(prefix?: string): string;
@@ -7,6 +7,13 @@ export declare function retry<T>(fn: () => Promise<T>, attempts?: number): Promi
 export declare function truncate(value: string, maxLength: number): string;
 export declare function toQueryString(params: Record<string, string | number | boolean | undefined>): string;
 export declare function fetchJson<T>(url: string, init?: RequestInit, timeoutMs?: number): Promise<T>;
+export declare function headersToRecord(headers: Headers): Record<string, string>;
+export declare function parseRateLimitSnapshot(headers: Record<string, string>): RateLimitSnapshot | null;
+export declare function fetchJsonDetailed<T>(url: string, init?: RequestInit, timeoutMs?: number): Promise<{
+    data: T;
+    headers: Record<string, string>;
+    rateLimit: RateLimitSnapshot | null;
+}>;
 export declare function clamp(value: number, min: number, max: number): number;
 export declare function sanitizeColor(value: string | undefined, fallback?: string): string;
 export declare function splitTags(value: string | string[] | undefined): string[];

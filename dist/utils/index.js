@@ -8,6 +8,9 @@ exports.retry = retry;
 exports.truncate = truncate;
 exports.toQueryString = toQueryString;
 exports.fetchJson = fetchJson;
+exports.headersToRecord = headersToRecord;
+exports.parseRateLimitSnapshot = parseRateLimitSnapshot;
+exports.fetchJsonDetailed = fetchJsonDetailed;
 exports.clamp = clamp;
 exports.sanitizeColor = sanitizeColor;
 exports.splitTags = splitTags;
@@ -103,6 +106,85 @@ function toQueryString(params) {
 }
 // Shared fetch wrapper that enforces timeout and better error messages across all clients.
 async function fetchJson(url, init = {}, timeoutMs = 8000) {
+    const result = await fetchJsonDetailed(url, init, timeoutMs);
+    return result.data;
+}
+function parseQuotaNumber(value) {
+    if (!value) {
+        return null;
+    }
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+    if (normalized === "infinite" || normalized === "unlimited") {
+        return "infinite";
+    }
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+function parseRateLimitResetAt(value) {
+    if (!value) {
+        return null;
+    }
+    const parsed = Number(value.trim());
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+        return null;
+    }
+    if (parsed > 1_000_000_000_000) {
+        return Math.round(parsed);
+    }
+    if (parsed > 1_000_000_000) {
+        return Math.round(parsed * 1000);
+    }
+    return Date.now() + Math.round(parsed * 1000);
+}
+function readFirstHeader(headers, keys) {
+    for (const key of keys) {
+        const value = headers[key];
+        if (value) {
+            return value;
+        }
+    }
+    return undefined;
+}
+function headersToRecord(headers) {
+    const record = {};
+    headers.forEach((value, key) => {
+        record[key.toLowerCase()] = value;
+    });
+    return record;
+}
+function parseRateLimitSnapshot(headers) {
+    const limit = parseQuotaNumber(readFirstHeader(headers, [
+        "x-ratelimit-limit",
+        "ratelimit-limit",
+        "x-rate-limit-limit",
+        "x-rate-limit-requests-limit"
+    ]));
+    const remaining = parseQuotaNumber(readFirstHeader(headers, [
+        "x-ratelimit-remaining",
+        "ratelimit-remaining",
+        "x-rate-limit-remaining",
+        "x-rate-limit-requests-remaining"
+    ]));
+    const resetAt = parseRateLimitResetAt(readFirstHeader(headers, [
+        "x-ratelimit-reset",
+        "ratelimit-reset",
+        "x-rate-limit-reset",
+        "x-rate-limit-reset-after",
+        "retry-after"
+    ]));
+    if (limit === null && remaining === null && resetAt === null) {
+        return null;
+    }
+    return {
+        limit,
+        remaining,
+        resetAt
+    };
+}
+async function fetchJsonDetailed(url, init = {}, timeoutMs = 8000) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -114,7 +196,12 @@ async function fetchJson(url, init = {}, timeoutMs = 8000) {
             const body = await response.text().catch(() => "");
             throw new Error(`HTTP ${response.status} for ${url}${body ? ` :: ${truncate(body, 160)}` : ""}`);
         }
-        return (await response.json());
+        const headers = headersToRecord(response.headers);
+        return {
+            data: (await response.json()),
+            headers,
+            rateLimit: parseRateLimitSnapshot(headers)
+        };
     }
     finally {
         clearTimeout(timeoutId);

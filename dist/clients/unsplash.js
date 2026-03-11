@@ -13,16 +13,18 @@ async function fetchUnsplash(request) {
         orientation: "portrait"
     });
     const url = `https://api.unsplash.com/search/photos?${query}`;
-    const data = await (0, utils_1.retry)(() => (0, utils_1.fetchJson)(url, {
+    const result = await (0, utils_1.retry)(() => (0, utils_1.fetchJsonDetailed)(url, {
         headers: {
             Authorization: `Client-ID ${config_1.API_KEYS.unsplash}`
         }
     }, config_1.REQUEST_DEFAULTS.requestTimeoutMs), config_1.REQUEST_DEFAULTS.retryAttempts);
     return {
         source: "unsplash",
-        data,
+        data: result.data,
         fetchedAt: Date.now(),
         latencyMs: Date.now() - startedAt,
-        request
+        request,
+        headers: result.headers,
+        rateLimit: result.rateLimit
     };
 }

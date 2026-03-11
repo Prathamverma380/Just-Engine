@@ -14,15 +14,12 @@ export function normalizePicsum(response: ClientResponse<PicsumListResponse>): W
         source: "picsum",
         sourceId: item.id,
         urls: {
-          thumbnail: `/api/wallpaper/picsum/${item.id}/thumbnail`,
-          preview: `/api/wallpaper/picsum/${item.id}/preview`,
-          full: `/api/wallpaper/picsum/${item.id}/full`,
-          original: `/api/wallpaper/picsum/${item.id}/original`
-          // thumbnail: `https://picsum.photos/id/${item.id}/320/568`,
-          // preview: `https://picsum.photos/id/${item.id}/900/1600`,
-          // full: `https://picsum.photos/id/${item.id}/1440/2560`,
-          // original: `/api/image/${item.id}/full`
-          // original: item.download_url
+          thumbnail: `https://picsum.photos/id/${item.id}/320/568`,
+          preview: `https://picsum.photos/id/${item.id}/900/1600`,
+          full: `https://picsum.photos/id/${item.id}/1440/2560`,
+          original:
+            item.download_url ??
+            `https://picsum.photos/id/${item.id}/${Math.max(1, item.width ?? 1440)}/${Math.max(1, item.height ?? 2560)}`
         },
         width: item.width,
         height: item.height,

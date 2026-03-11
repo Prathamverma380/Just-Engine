@@ -105,6 +105,8 @@ export interface ClientResponse<T = unknown> {
   fetchedAt: number;
   latencyMs: number;
   request: ApiClientRequest;
+  headers: Record<string, string>;
+  rateLimit: RateLimitSnapshot | null;
 }
 
 // Cache entries keep both freshness and stale-fallback windows.
@@ -132,6 +134,13 @@ export interface QuotaLimits {
   requiresKey: boolean;
 }
 
+// Providers expose wildly different rate-limit headers, so the client layer normalizes them into this shape.
+export interface RateLimitSnapshot {
+  limit: number | "infinite" | null;
+  remaining: number | "infinite" | null;
+  resetAt: number | null;
+}
+
 // This snapshot is what health and stats screens can render without touching internal state.
 export interface SourceQuotaSnapshot {
   source: WallpaperSource;
@@ -142,6 +151,9 @@ export interface SourceQuotaSnapshot {
   minuteRemaining?: number | "infinite";
   hourlyRemaining?: number | "infinite";
   monthlyRemaining?: number | "infinite";
+  observedLimit?: number | "infinite" | null;
+  observedRemaining?: number | "infinite" | null;
+  rateLimitResetAt?: number | null;
   totalRequests: number;
   failures: number;
 }

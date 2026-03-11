@@ -57,6 +57,8 @@ export interface ClientResponse<T = unknown> {
     fetchedAt: number;
     latencyMs: number;
     request: ApiClientRequest;
+    headers: Record<string, string>;
+    rateLimit: RateLimitSnapshot | null;
 }
 export interface CacheEntry<T> {
     key: string;
@@ -77,6 +79,11 @@ export interface QuotaLimits {
     reserveRatio: number;
     requiresKey: boolean;
 }
+export interface RateLimitSnapshot {
+    limit: number | "infinite" | null;
+    remaining: number | "infinite" | null;
+    resetAt: number | null;
+}
 export interface SourceQuotaSnapshot {
     source: WallpaperSource;
     healthy: boolean;
@@ -86,6 +93,9 @@ export interface SourceQuotaSnapshot {
     minuteRemaining?: number | "infinite";
     hourlyRemaining?: number | "infinite";
     monthlyRemaining?: number | "infinite";
+    observedLimit?: number | "infinite" | null;
+    observedRemaining?: number | "infinite" | null;
+    rateLimitResetAt?: number | null;
     totalRequests: number;
     failures: number;
 }

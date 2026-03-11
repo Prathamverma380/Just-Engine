@@ -1,7 +1,7 @@
 // NASA client: this one has two personalities.
 // Search mode uses the NASA image library; daily mode uses APOD.
 import { API_KEYS, REQUEST_DEFAULTS } from "../config";
-import { fetchJson, retry, toQueryString } from "../utils";
+import { fetchJsonDetailed, retry, toQueryString } from "../utils";
 import type { ApiClientRequest, ClientResponse } from "../types/wallpaper";
 
 // NASA search and APOD have different payload shapes, so both are modeled here.
@@ -56,16 +56,18 @@ export async function fetchNasa(
           page: request.page
         })}`;
 
-  const data = await retry(
-    () => fetchJson<NasaSearchResponse | NasaApodResponse>(url, {}, REQUEST_DEFAULTS.requestTimeoutMs),
+  const result = await retry(
+    () => fetchJsonDetailed<NasaSearchResponse | NasaApodResponse>(url, {}, REQUEST_DEFAULTS.requestTimeoutMs),
     REQUEST_DEFAULTS.retryAttempts
   );
 
   return {
     source: "nasa",
-    data,
+    data: result.data,
     fetchedAt: Date.now(),
     latencyMs: Date.now() - startedAt,
-    request
+    request,
+    headers: result.headers,
+    rateLimit: result.rateLimit
   };
 }

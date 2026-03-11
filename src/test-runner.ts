@@ -18,6 +18,7 @@ import {
   normalizePixabay,
   normalizeUnsplash
 } from "./normalizers";
+import { searchBundledOfflineWallpapers } from "./offline/bundle";
 import { getSourcePlan, getUltimateFallbackSource, pickSource } from "./router";
 import { getQuotaReport } from "./quota";
 import { getDataRootPath, getPersistencePath } from "./persistence";
@@ -37,7 +38,15 @@ import {
   storageClear
 } from "./storage";
 import type { ApiClientRequest, Wallpaper } from "./types/wallpaper";
-import { buildSharePayload, cacheWallpaperBundle, cacheWallpaperThumbnail, getBestWallpaperUrl, getCachedThumbnailPath, getWallpaperUrl } from "./utils";
+import {
+  buildSharePayload,
+  cacheWallpaperBundle,
+  cacheWallpaperThumbnail,
+  getBestWallpaperUrl,
+  getCachedThumbnailPath,
+  getWallpaperUrl,
+  isValidUrl
+} from "./utils";
 
 declare const process:
   | {
@@ -72,6 +81,14 @@ function fail(name: string, detail: string): TestResult {
   return { name, passed: false, detail };
 }
 
+function formatRateLimit(rateLimit: { remaining: number | "infinite" | null } | null): string {
+  if (!rateLimit || rateLimit.remaining === null || rateLimit.remaining === undefined) {
+    return "remaining=header-unavailable";
+  }
+
+  return `remaining=${rateLimit.remaining}`;
+}
+
 // Measures end-to-end duration for higher-level engine calls.
 async function measure<T>(fn: () => Promise<T>): Promise<{ result: T; durationMs: number }> {
   const startedAt = Date.now();
@@ -84,7 +101,17 @@ async function measure<T>(fn: () => Promise<T>): Promise<{ result: T; durationMs
 
 // Quick sanity check that normalized wallpapers are usable, not just present.
 function assertWallpapers(items: Wallpaper[], minimum = 1): boolean {
-  return items.length >= minimum && items.every((item) => Boolean(item.id && item.urls.preview && item.source));
+  return (
+    items.length >= minimum &&
+    items.every(
+      (item) =>
+        Boolean(item.id && item.source) &&
+        isValidUrl(item.urls.thumbnail) &&
+        isValidUrl(item.urls.preview) &&
+        isValidUrl(item.urls.full) &&
+        isValidUrl(item.urls.original)
+    )
+  );
 }
 
 // Verifies that every live source is reachable and returns data with the configured keys.
@@ -133,7 +160,7 @@ async function runApiClientTests(): Promise<TestResult[]> {
     const unsplash = await fetchUnsplash(unsplashRequest);
     results.push(
       unsplash.data.results?.length
-        ? pass("Unsplash", `${unsplash.data.results.length} items, ${unsplash.latencyMs}ms`)
+        ? pass("Unsplash", `${unsplash.data.results.length} items, ${unsplash.latencyMs}ms, ${formatRateLimit(unsplash.rateLimit)}`)
         : fail("Unsplash", "no items returned")
     );
   } catch (error) {
@@ -144,7 +171,7 @@ async function runApiClientTests(): Promise<TestResult[]> {
     const pexels = await fetchPexels(pexelsRequest);
     results.push(
       pexels.data.photos?.length
-        ? pass("Pexels", `${pexels.data.photos.length} items, ${pexels.latencyMs}ms`)
+        ? pass("Pexels", `${pexels.data.photos.length} items, ${pexels.latencyMs}ms, ${formatRateLimit(pexels.rateLimit)}`)
         : fail("Pexels", "no items returned")
     );
   } catch (error) {
@@ -155,7 +182,7 @@ async function runApiClientTests(): Promise<TestResult[]> {
     const pixabay = await fetchPixabay(pixabayRequest);
     results.push(
       pixabay.data.hits?.length
-        ? pass("Pixabay", `${pixabay.data.hits.length} items, ${pixabay.latencyMs}ms`)
+        ? pass("Pixabay", `${pixabay.data.hits.length} items, ${pixabay.latencyMs}ms, ${formatRateLimit(pixabay.rateLimit)}`)
         : fail("Pixabay", "no items returned")
     );
   } catch (error) {
@@ -165,7 +192,9 @@ async function runApiClientTests(): Promise<TestResult[]> {
   try {
     const nasa = await fetchNasa(nasaRequest);
     const count = "collection" in nasa.data ? nasa.data.collection?.items?.length ?? 0 : 1;
-    results.push(count ? pass("NASA", `${count} items, ${nasa.latencyMs}ms`) : fail("NASA", "no items returned"));
+    results.push(
+      count ? pass("NASA", `${count} items, ${nasa.latencyMs}ms, ${formatRateLimit(nasa.rateLimit)}`) : fail("NASA", "no items returned")
+    );
   } catch (error) {
     results.push(fail("NASA", error instanceof Error ? error.message : String(error)));
   }
@@ -174,7 +203,7 @@ async function runApiClientTests(): Promise<TestResult[]> {
     const picsum = await fetchPicsum(picsumRequest);
     results.push(
       picsum.data.length
-        ? pass("Picsum", `${picsum.data.length} items, ${picsum.latencyMs}ms`)
+        ? pass("Picsum", `${picsum.data.length} items, ${picsum.latencyMs}ms, ${formatRateLimit(picsum.rateLimit)}`)
         : fail("Picsum", "no items returned")
     );
   } catch (error) {
@@ -441,6 +470,12 @@ async function runUtilityTests(): Promise<TestResult[]> {
   const cachedThumbnailPath = getCachedThumbnailPath(sample);
   const bundlePaths = await cacheWallpaperBundle(sample);
   const dataRoot = getDataRootPath();
+  const bundledOffline = searchBundledOfflineWallpapers({
+    query: "nebula",
+    category: "space",
+    page: 1,
+    perPage: 3
+  });
   const scheduler = engine.startCacheWarmScheduler(60_000, ["nature"]);
   engine.stopCacheWarmScheduler();
 
@@ -460,6 +495,9 @@ async function runUtilityTests(): Promise<TestResult[]> {
     bundlePaths.previewPath.includes("db 0.4") && dataRoot?.includes("db 0.4")
       ? pass("Search bundle path", JSON.stringify(bundlePaths))
       : fail("Search bundle path", JSON.stringify(bundlePaths)),
+    bundledOffline.length > 0 && assertWallpapers(bundledOffline, 1)
+      ? pass("Offline bundle", `${bundledOffline.length} bundled matches`)
+      : fail("Offline bundle", "no bundled matches"),
     scheduler.intervalMs === 60_000 && scheduler.categories.includes("nature")
       ? pass("Warm scheduler", JSON.stringify(scheduler))
       : fail("Warm scheduler", JSON.stringify(scheduler))
@@ -471,6 +509,7 @@ async function runPipelineTests(): Promise<TestResult[]> {
   line("[TEST 7] Full Pipeline");
 
   const first = await measure(() => engine.search("mountains", "nature", 1));
+  const alias = await measure(() => engine.getWallpapers("mountains", "nature", 1));
   const second = await measure(() => engine.search("mountains", "nature", 1));
   const featured = await measure(() => engine.getFeatured());
   const trending = await measure(() => engine.getTrending());
@@ -481,6 +520,9 @@ async function runPipelineTests(): Promise<TestResult[]> {
     assertWallpapers(first.result, 1)
       ? pass("Search fresh", `${first.result.length} results, ${first.durationMs}ms`)
       : fail("Search fresh", "invalid result set"),
+    assertWallpapers(alias.result, 1)
+      ? pass("getWallpapers alias", `${alias.result.length} results, ${alias.durationMs}ms`)
+      : fail("getWallpapers alias", "invalid alias result set"),
     assertWallpapers(second.result, 1)
       ? pass("Search cached", `${second.result.length} results, ${second.durationMs}ms`)
       : fail("Search cached", "invalid result set"),

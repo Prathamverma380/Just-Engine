@@ -1,7 +1,7 @@
 // Picsum client: simple, unlimited, and intentionally boring.
 // It exists so the engine has a live fallback even when every quota-based source is unavailable.
 import { REQUEST_DEFAULTS } from "../config";
-import { fetchJson, retry, toQueryString } from "../utils";
+import { fetchJsonDetailed, retry, toQueryString } from "../utils";
 import type { ApiClientRequest, ClientResponse } from "../types/wallpaper";
 
 // Picsum is intentionally simple and acts as our always-available live fallback.
@@ -27,16 +27,18 @@ export async function fetchPicsum(
     limit: request.perPage
   })}`;
 
-  const data = await retry(
-    () => fetchJson<PicsumListResponse>(url, {}, REQUEST_DEFAULTS.requestTimeoutMs),
+  const result = await retry(
+    () => fetchJsonDetailed<PicsumListResponse>(url, {}, REQUEST_DEFAULTS.requestTimeoutMs),
     REQUEST_DEFAULTS.retryAttempts
   );
 
   return {
     source: "picsum",
-    data,
+    data: result.data,
     fetchedAt: Date.now(),
     latencyMs: Date.now() - startedAt,
-    request
+    request,
+    headers: result.headers,
+    rateLimit: result.rateLimit
   };
 }

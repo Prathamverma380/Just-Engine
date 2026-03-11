@@ -21,7 +21,8 @@ const initialState = () => ({
     monthlyRequests: 0,
     totalRequests: 0,
     consecutiveFailures: 0,
-    lastLatency: null
+    lastLatency: null,
+    observedRateLimit: null
 });
 // All counters live in-memory because this is enough for backend runtime behavior and testing.
 // Runtime-only state is enough for now because quota is mainly used for in-process routing decisions.
@@ -90,6 +91,7 @@ function recordUsage(source, result) {
     state.totalRequests += 1;
     state.lastLatency = result.latencyMs ?? state.lastLatency;
     state.consecutiveFailures = result.success ? 0 : state.consecutiveFailures + 1;
+    state.observedRateLimit = result.rateLimit ?? state.observedRateLimit;
 }
 // Gives the router a normalized view of what quota is still safe to spend.
 // Gives the router a normalized answer to "what is still safe to spend?"
@@ -106,6 +108,12 @@ function getRemaining(source) {
 // The router uses this to skip sources that are technically available but strategically exhausted.
 // If any bounded window is exhausted, we stop treating the source as usable.
 function hasQuota(source) {
+    const observedRemaining = runtimeState[source].observedRateLimit?.remaining;
+    if (observedRemaining !== undefined && observedRemaining !== null && observedRemaining !== "infinite") {
+        if (observedRemaining <= 0) {
+            return false;
+        }
+    }
     const values = Object.values(getRemaining(source));
     return values.every((value) => value === "infinite" || value > 0);
 }
@@ -141,6 +149,9 @@ function getQuotaReport() {
             minuteRemaining: remainingQuota.minute,
             hourlyRemaining: remainingQuota.hourly,
             monthlyRemaining: remainingQuota.monthly,
+            observedLimit: state.observedRateLimit?.limit ?? null,
+            observedRemaining: state.observedRateLimit?.remaining ?? null,
+            rateLimitResetAt: state.observedRateLimit?.resetAt ?? null,
             totalRequests: state.totalRequests,
             failures: state.consecutiveFailures
         };

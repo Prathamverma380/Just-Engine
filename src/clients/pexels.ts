@@ -1,6 +1,6 @@
 // Pexels client: header-auth search against curated commercial-free photography.
 import { API_KEYS, REQUEST_DEFAULTS } from "../config";
-import { fetchJson, retry, toQueryString } from "../utils";
+import { fetchJsonDetailed, retry, toQueryString } from "../utils";
 import type { ApiClientRequest, ClientResponse } from "../types/wallpaper";
 
 // Narrow client-side view of the Pexels payload.
@@ -42,9 +42,9 @@ export async function fetchPexels(
   });
   const url = `https://api.pexels.com/v1/search?${query}`;
 
-  const data = await retry(
+  const result = await retry(
     () =>
-      fetchJson<PexelsSearchResponse>(
+      fetchJsonDetailed<PexelsSearchResponse>(
         url,
         {
           headers: {
@@ -58,9 +58,11 @@ export async function fetchPexels(
 
   return {
     source: "pexels",
-    data,
+    data: result.data,
     fetchedAt: Date.now(),
     latencyMs: Date.now() - startedAt,
-    request
+    request,
+    headers: result.headers,
+    rateLimit: result.rateLimit
   };
 }

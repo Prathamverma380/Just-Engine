@@ -3,6 +3,7 @@
 import { SOURCE_LIMITS, isSourceConfigured } from "../config";
 import {
   REMOTE_WALLPAPER_SOURCES,
+  type RateLimitSnapshot,
   type RemoteWallpaperSource,
   type SourceQuotaSnapshot
 } from "../types/wallpaper";
@@ -19,6 +20,7 @@ interface SourceRuntimeState {
   totalRequests: number;
   consecutiveFailures: number;
   lastLatency: number | null;
+  observedRateLimit: RateLimitSnapshot | null;
 }
 
 // Fresh state for a source before any requests have been made.
@@ -32,7 +34,8 @@ const initialState = (): SourceRuntimeState => ({
   monthlyRequests: 0,
   totalRequests: 0,
   consecutiveFailures: 0,
-  lastLatency: null
+  lastLatency: null,
+  observedRateLimit: null
 });
 
 // All counters live in-memory because this is enough for backend runtime behavior and testing.
@@ -98,7 +101,7 @@ function remaining(limit: number | undefined, used: number, reserveRatio: number
 // Every successful or failed provider attempt should be recorded here.
 export function recordUsage(
   source: RemoteWallpaperSource,
-  result: { success: boolean; latencyMs?: number | null }
+  result: { success: boolean; latencyMs?: number | null; rateLimit?: RateLimitSnapshot | null }
 ): void {
   resetWindowsIfNeeded(source);
   const state = runtimeState[source];
@@ -119,6 +122,7 @@ export function recordUsage(
   state.totalRequests += 1;
   state.lastLatency = result.latencyMs ?? state.lastLatency;
   state.consecutiveFailures = result.success ? 0 : state.consecutiveFailures + 1;
+  state.observedRateLimit = result.rateLimit ?? state.observedRateLimit;
 }
 
 // Gives the router a normalized view of what quota is still safe to spend.
@@ -142,6 +146,13 @@ export function getRemaining(source: RemoteWallpaperSource): {
 // The router uses this to skip sources that are technically available but strategically exhausted.
 // If any bounded window is exhausted, we stop treating the source as usable.
 export function hasQuota(source: RemoteWallpaperSource): boolean {
+  const observedRemaining = runtimeState[source].observedRateLimit?.remaining;
+  if (observedRemaining !== undefined && observedRemaining !== null && observedRemaining !== "infinite") {
+    if (observedRemaining <= 0) {
+      return false;
+    }
+  }
+
   const values = Object.values(getRemaining(source));
   return values.every((value) => value === "infinite" || value > 0);
 }
@@ -183,6 +194,9 @@ export function getQuotaReport(): Record<RemoteWallpaperSource, SourceQuotaSnaps
         minuteRemaining: remainingQuota.minute,
         hourlyRemaining: remainingQuota.hourly,
         monthlyRemaining: remainingQuota.monthly,
+        observedLimit: state.observedRateLimit?.limit ?? null,
+        observedRemaining: state.observedRateLimit?.remaining ?? null,
+        rateLimitResetAt: state.observedRateLimit?.resetAt ?? null,
         totalRequests: state.totalRequests,
         failures: state.consecutiveFailures
       };

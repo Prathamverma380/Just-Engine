@@ -1,6 +1,6 @@
 // Pixabay client: broad library, especially useful for illustrations and fallback volume.
 import { API_KEYS, REQUEST_DEFAULTS } from "../config";
-import { fetchJson, retry, toQueryString } from "../utils";
+import { fetchJsonDetailed, retry, toQueryString } from "../utils";
 import type { ApiClientRequest, ClientResponse } from "../types/wallpaper";
 
 // Pixabay is especially useful for illustrations, vectors, and wide-category fallback volume.
@@ -39,16 +39,18 @@ export async function fetchPixabay(
   });
   const url = `https://pixabay.com/api/?${query}`;
 
-  const data = await retry(
-    () => fetchJson<PixabaySearchResponse>(url, {}, REQUEST_DEFAULTS.requestTimeoutMs),
+  const result = await retry(
+    () => fetchJsonDetailed<PixabaySearchResponse>(url, {}, REQUEST_DEFAULTS.requestTimeoutMs),
     REQUEST_DEFAULTS.retryAttempts
   );
 
   return {
     source: "pixabay",
-    data,
+    data: result.data,
     fetchedAt: Date.now(),
     latencyMs: Date.now() - startedAt,
-    request
+    request,
+    headers: result.headers,
+    rateLimit: result.rateLimit
   };
 }

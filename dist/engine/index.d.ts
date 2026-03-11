@@ -1,6 +1,7 @@
 import { ENGINE_CONSTANTS } from "../config";
 import type { EngineHealthReport, EngineStats, Wallpaper } from "../types/wallpaper";
 declare function search(query: string, category?: string, page?: number): Promise<Wallpaper[]>;
+declare function getWallpapers(query: string, category?: string, page?: number): Promise<Wallpaper[]>;
 declare function getFeatured(): Promise<Wallpaper[]>;
 declare function getByCategory(category: string, page?: number): Promise<Wallpaper[]>;
 declare function getTrending(page?: number): Promise<Wallpaper[]>;
@@ -14,6 +15,7 @@ declare function stopCacheWarmScheduler(): void;
 declare function healthCheck(): Promise<EngineHealthReport>;
 declare function getStats(): Promise<EngineStats>;
 export declare const engine: {
+    getWallpapers: typeof getWallpapers;
     search: typeof search;
     getFeatured: typeof getFeatured;
     getTrending: typeof getTrending;
@@ -25,4 +27,4 @@ export declare const engine: {
     healthCheck: typeof healthCheck;
     getStats: typeof getStats;
 };
-export { search, getFeatured, getTrending, getByCategory, getDaily, warmCache, startCacheWarmScheduler, stopCacheWarmScheduler, healthCheck, getStats, ENGINE_CONSTANTS };
+export { getWallpapers, search, getFeatured, getTrending, getByCategory, getDaily, warmCache, startCacheWarmScheduler, stopCacheWarmScheduler, healthCheck, getStats, ENGINE_CONSTANTS };

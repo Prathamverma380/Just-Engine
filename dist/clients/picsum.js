@@ -13,12 +13,14 @@ async function fetchPicsum(request) {
         page: request.page,
         limit: request.perPage
     })}`;
-    const data = await (0, utils_1.retry)(() => (0, utils_1.fetchJson)(url, {}, config_1.REQUEST_DEFAULTS.requestTimeoutMs), config_1.REQUEST_DEFAULTS.retryAttempts);
+    const result = await (0, utils_1.retry)(() => (0, utils_1.fetchJsonDetailed)(url, {}, config_1.REQUEST_DEFAULTS.requestTimeoutMs), config_1.REQUEST_DEFAULTS.retryAttempts);
     return {
         source: "picsum",
-        data,
+        data: result.data,
         fetchedAt: Date.now(),
         latencyMs: Date.now() - startedAt,
-        request
+        request,
+        headers: result.headers,
+        rateLimit: result.rateLimit
     };
 }

@@ -15,16 +15,18 @@ async function fetchPexels(request) {
         orientation: "portrait"
     });
     const url = `https://api.pexels.com/v1/search?${query}`;
-    const data = await (0, utils_1.retry)(() => (0, utils_1.fetchJson)(url, {
+    const result = await (0, utils_1.retry)(() => (0, utils_1.fetchJsonDetailed)(url, {
         headers: {
             Authorization: config_1.API_KEYS.pexels
         }
     }, config_1.REQUEST_DEFAULTS.requestTimeoutMs), config_1.REQUEST_DEFAULTS.retryAttempts);
     return {
         source: "pexels",
-        data,
+        data: result.data,
         fetchedAt: Date.now(),
         latencyMs: Date.now() - startedAt,
-        request
+        request,
+        headers: result.headers,
+        rateLimit: result.rateLimit
     };
 }

@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ENGINE_CONSTANTS = exports.engine = void 0;
+exports.getWallpapers = getWallpapers;
 exports.search = search;
 exports.getFeatured = getFeatured;
 exports.getTrending = getTrending;
@@ -18,6 +19,7 @@ const clients_1 = require("../clients");
 const config_1 = require("../config");
 Object.defineProperty(exports, "ENGINE_CONSTANTS", { enumerable: true, get: function () { return config_1.ENGINE_CONSTANTS; } });
 const normalizers_1 = require("../normalizers");
+const bundle_1 = require("../offline/bundle");
 const quota_1 = require("../quota");
 const router_1 = require("../router");
 const storage_1 = require("../storage");
@@ -44,7 +46,8 @@ async function trySource(source, request) {
     const response = await client(request);
     (0, quota_1.recordUsage)(source, {
         success: true,
-        latencyMs: response.latencyMs
+        latencyMs: response.latencyMs,
+        rateLimit: response.rateLimit
     });
     const normalizer = (0, normalizers_1.getNormalizer)(source);
     return (0, utils_1.dedupeWallpapers)(normalizer(response)).slice(0, request.perPage);
@@ -144,7 +147,15 @@ async function runPipeline(request) {
             console.error(`[engine] Ultimate fallback ${ultimateFallbackSource} failed`, error);
         }
     }
-    // Absolute last resort: generated offline wallpapers so the engine still returns something valid.
+    // Shipped offline bundle: real curated local wallpapers embedded with the engine.
+    const bundledOffline = (0, bundle_1.searchBundledOfflineWallpapers)(request);
+    if (bundledOffline.length > 0) {
+        (0, cache_1.localBundleUpsert)(bundledOffline);
+        (0, cache_1.cacheSet)(cacheKey, bundledOffline, config_1.CACHE_SETTINGS.ttlMs, config_1.CACHE_SETTINGS.staleTtlMs);
+        cachedLatencies.push(Math.max(1, Date.now() - startedAt));
+        return decorateFavorites(bundledOffline);
+    }
+    // Absolute last resort after the shipped bundle: generated offline wallpapers so the engine still returns something valid.
     const offline = (0, utils_1.createOfflineWallpapers)(request);
     (0, cache_1.localBundleUpsert)(offline);
     (0, cache_1.cacheSet)(cacheKey, offline, config_1.CACHE_SETTINGS.ttlMs, config_1.CACHE_SETTINGS.staleTtlMs);
@@ -162,6 +173,10 @@ async function search(query, category, page = 1) {
         payload.category = category;
     }
     return runPipeline(buildRequest(payload));
+}
+// The original doc calls this `getWallpapers`, so keep that public alias for hosts that want the explicit name.
+async function getWallpapers(query, category, page = 1) {
+    return search(query, category, page);
 }
 // Returns one themed set based on the current day so "featured" feels curated instead of random.
 // This is "featured" in the current backend sense: a rotating curated query set, not a true editorial CMS.
@@ -216,7 +231,13 @@ async function getDaily() {
         perPage: 1,
         mode: "daily"
     }));
-    const result = wallpaper ?? fallbackDaily[0];
+    const bundledDaily = (0, bundle_1.searchBundledOfflineWallpapers)({
+        query: "astronomy picture of the day",
+        category: "space",
+        page: 1,
+        perPage: 1
+    });
+    const result = wallpaper ?? bundledDaily[0] ?? fallbackDaily[0];
     (0, cache_1.cacheSet)(cacheKey, [result], config_1.CACHE_SETTINGS.ttlMs, config_1.CACHE_SETTINGS.staleTtlMs);
     return result;
 }
@@ -295,6 +316,7 @@ async function getStats() {
 // The UI should only need this object, not the internals behind it.
 // This exported object is the intended public backend surface.
 exports.engine = {
+    getWallpapers,
     search,
     getFeatured,
     getTrending,

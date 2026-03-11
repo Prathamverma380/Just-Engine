@@ -17,6 +17,7 @@ import {
   REQUEST_DEFAULTS
 } from "../config";
 import { getNormalizer } from "../normalizers";
+import { searchBundledOfflineWallpapers } from "../offline/bundle";
 import { getQuotaReport, recordUsage } from "../quota";
 import { getDefaultQueryForCategory, getUltimateFallbackSource, pickSource, resolveCategory } from "../router";
 import { addSearchHistory, isFavorite } from "../storage";
@@ -65,7 +66,8 @@ async function trySource(source: "unsplash" | "pexels" | "pixabay" | "nasa" | "p
   const response = await client(request);
   recordUsage(source, {
     success: true,
-    latencyMs: response.latencyMs
+    latencyMs: response.latencyMs,
+    rateLimit: response.rateLimit
   });
 
   const normalizer = getNormalizer(source);
@@ -178,7 +180,16 @@ async function runPipeline(request: ApiClientRequest): Promise<Wallpaper[]> {
     }
   }
 
-  // Absolute last resort: generated offline wallpapers so the engine still returns something valid.
+  // Shipped offline bundle: real curated local wallpapers embedded with the engine.
+  const bundledOffline = searchBundledOfflineWallpapers(request);
+  if (bundledOffline.length > 0) {
+    localBundleUpsert(bundledOffline);
+    cacheSet(cacheKey, bundledOffline, CACHE_SETTINGS.ttlMs, CACHE_SETTINGS.staleTtlMs);
+    cachedLatencies.push(Math.max(1, Date.now() - startedAt));
+    return decorateFavorites(bundledOffline);
+  }
+
+  // Absolute last resort after the shipped bundle: generated offline wallpapers so the engine still returns something valid.
   const offline = createOfflineWallpapers(request);
   localBundleUpsert(offline);
   cacheSet(cacheKey, offline, CACHE_SETTINGS.ttlMs, CACHE_SETTINGS.staleTtlMs);
@@ -201,6 +212,11 @@ async function search(query: string, category?: string, page = 1): Promise<Wallp
   return runPipeline(
     buildRequest(payload)
   );
+}
+
+// The original doc calls this `getWallpapers`, so keep that public alias for hosts that want the explicit name.
+async function getWallpapers(query: string, category?: string, page = 1): Promise<Wallpaper[]> {
+  return search(query, category, page);
 }
 
 // Returns one themed set based on the current day so "featured" feels curated instead of random.
@@ -273,7 +289,13 @@ async function getDaily(): Promise<Wallpaper> {
       mode: "daily"
     })
   );
-  const result = wallpaper ?? fallbackDaily[0]!;
+  const bundledDaily = searchBundledOfflineWallpapers({
+    query: "astronomy picture of the day",
+    category: "space",
+    page: 1,
+    perPage: 1
+  });
+  const result = wallpaper ?? bundledDaily[0] ?? fallbackDaily[0]!;
 
   cacheSet(cacheKey, [result], CACHE_SETTINGS.ttlMs, CACHE_SETTINGS.staleTtlMs);
   return result;
@@ -369,6 +391,7 @@ async function getStats(): Promise<EngineStats> {
 // The UI should only need this object, not the internals behind it.
 // This exported object is the intended public backend surface.
 export const engine = {
+  getWallpapers,
   search,
   getFeatured,
   getTrending,
@@ -382,6 +405,7 @@ export const engine = {
 };
 
 export {
+  getWallpapers,
   search,
   getFeatured,
   getTrending,
