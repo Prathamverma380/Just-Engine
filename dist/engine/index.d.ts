@@ -1,6 +1,9 @@
 import { ENGINE_CONSTANTS } from "../config";
-import type { EngineHealthReport, EngineStats, Wallpaper } from "../types/wallpaper";
+import type { EngineHealthReport, EngineStats, SearchQuery, Wallpaper } from "../types/wallpaper";
+type ImageRequestOptions = Omit<SearchQuery, "query">;
 declare function search(query: string, category?: string, page?: number): Promise<Wallpaper[]>;
+declare function generate(prompt: string, options?: ImageRequestOptions): Promise<Wallpaper[]>;
+declare function getImages(query: string, options?: ImageRequestOptions): Promise<Wallpaper[]>;
 declare function getWallpapers(query: string, category?: string, page?: number): Promise<Wallpaper[]>;
 declare function getFeatured(): Promise<Wallpaper[]>;
 declare function getByCategory(category: string, page?: number): Promise<Wallpaper[]>;
@@ -16,7 +19,9 @@ declare function healthCheck(): Promise<EngineHealthReport>;
 declare function getStats(): Promise<EngineStats>;
 export declare const engine: {
     getWallpapers: typeof getWallpapers;
+    getImages: typeof getImages;
     search: typeof search;
+    generate: typeof generate;
     getFeatured: typeof getFeatured;
     getTrending: typeof getTrending;
     getByCategory: typeof getByCategory;
@@ -27,4 +32,4 @@ export declare const engine: {
     healthCheck: typeof healthCheck;
     getStats: typeof getStats;
 };
-export { getWallpapers, search, getFeatured, getTrending, getByCategory, getDaily, warmCache, startCacheWarmScheduler, stopCacheWarmScheduler, healthCheck, getStats, ENGINE_CONSTANTS };
+export { getWallpapers, getImages, search, generate, getFeatured, getTrending, getByCategory, getDaily, warmCache, startCacheWarmScheduler, stopCacheWarmScheduler, healthCheck, getStats, ENGINE_CONSTANTS };

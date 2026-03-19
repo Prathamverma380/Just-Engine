@@ -163,11 +163,23 @@ export function isHealthy(source: RemoteWallpaperSource): boolean {
   return isSourceConfigured(source) && runtimeState[source].consecutiveFailures < 3;
 }
 
+// The router uses the last observed latency as a real-time signal when ranking sources.
+export function getLastLatency(source: RemoteWallpaperSource): number | null {
+  return runtimeState[source].lastLatency;
+}
+
 // This is mostly for testing and forcing rollover behavior.
 // Mostly a testing hook.
 export function resetHourly(): void {
   for (const source of REMOTE_WALLPAPER_SOURCES) {
     runtimeState[source].hourlyBucket = currentHourBucket(new Date(Date.now() - 3600000));
+  }
+}
+
+// Fully clears runtime quota state so routing tests can seed deterministic health and latency data.
+export function resetQuotaState(): void {
+  for (const source of REMOTE_WALLPAPER_SOURCES) {
+    runtimeState[source] = initialState();
   }
 }
 

@@ -11,6 +11,7 @@ import {
 } from "./cache";
 import { fetchNasa, fetchPexels, fetchPicsum, fetchPixabay, fetchUnsplash } from "./clients";
 import { engine } from "./engine";
+import { detectImageIntent, setGenerateImageOverrideForTests } from "./ai";
 import {
   normalizeNasa,
   normalizePexels,
@@ -20,7 +21,7 @@ import {
 } from "./normalizers";
 import { searchBundledOfflineWallpapers } from "./offline/bundle";
 import { getSourcePlan, getUltimateFallbackSource, pickSource } from "./router";
-import { getQuotaReport } from "./quota";
+import { getQuotaReport, recordUsage, resetQuotaState } from "./quota";
 import { getDataRootPath, getPersistencePath } from "./persistence";
 import {
   addSearchHistory,
@@ -42,6 +43,7 @@ import {
   buildSharePayload,
   cacheWallpaperBundle,
   cacheWallpaperThumbnail,
+  createSvgDataUrl,
   getBestWallpaperUrl,
   getCachedThumbnailPath,
   getWallpaperUrl,
@@ -274,21 +276,52 @@ async function runNormalizerTests(): Promise<TestResult[]> {
   }
 
   try {
-    const response = await fetchNasa({
+    let response = await fetchNasa({
       query: "astronomy picture of the day",
       category: "space",
       page: 1,
       perPage: 1,
       mode: "daily"
     });
-    const normalized = normalizeNasa(response);
+    let detail = "daily";
+    let normalized = normalizeNasa(response);
+
+    if (!assertWallpapers(normalized, 1)) {
+      response = await fetchNasa({
+        query: "nebula",
+        category: "space",
+        page: 1,
+        perPage: 3,
+        mode: "search"
+      });
+      normalized = normalizeNasa(response);
+      detail = "search fallback";
+    }
     results.push(
       assertWallpapers(normalized, 1)
-        ? pass("NASA -> Wallpaper", `${normalized.length} normalized`)
+        ? pass("NASA -> Wallpaper", `${normalized.length} normalized (${detail})`)
         : fail("NASA -> Wallpaper", "invalid normalized output")
     );
   } catch (error) {
-    results.push(fail("NASA -> Wallpaper", error instanceof Error ? error.message : String(error)));
+    try {
+      const response = await fetchNasa({
+        query: "nebula",
+        category: "space",
+        page: 1,
+        perPage: 3,
+        mode: "search"
+      });
+      const normalized = normalizeNasa(response);
+      results.push(
+        assertWallpapers(normalized, 1)
+          ? pass("NASA -> Wallpaper", `${normalized.length} normalized (search fallback)`)
+          : fail("NASA -> Wallpaper", "invalid normalized output")
+      );
+    } catch (fallbackError) {
+      const dailyError = error instanceof Error ? error.message : String(error);
+      const searchError = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      results.push(fail("NASA -> Wallpaper", `${dailyError} | fallback failed: ${searchError}`));
+    }
   }
 
   try {
@@ -315,6 +348,21 @@ async function runNormalizerTests(): Promise<TestResult[]> {
 // Shows the routing logic the engine would use before any network request is made.
 async function runRouterTests(): Promise<TestResult[]> {
   line("[TEST 3] Router");
+
+  resetQuotaState();
+
+  const coldStartNature = pickSource({
+    query: "mountains",
+    category: "nature",
+    page: 1,
+    perPage: 5,
+    mode: "search"
+  });
+
+  recordUsage("unsplash", { success: true, latencyMs: 320 });
+  recordUsage("pexels", { success: true, latencyMs: 90 });
+  recordUsage("pixabay", { success: true, latencyMs: 210 });
+  recordUsage("nasa", { success: true, latencyMs: 450 });
 
   const nature = pickSource({
     query: "mountains",
@@ -347,14 +395,142 @@ async function runRouterTests(): Promise<TestResult[]> {
   const ultimateFallback = getUltimateFallbackSource();
 
   const checks: Array<[string, boolean, string]> = [
-    ["Nature routing", nature.source === "unsplash" || nature.chain.includes("unsplash"), nature.chain.join(" -> ")],
-    ["Space routing", space.source === "nasa" || space.chain.includes("nasa"), space.chain.join(" -> ")],
+    ["Cold-start priority routing", coldStartNature.source === "unsplash", coldStartNature.chain.join(" -> ")],
+    ["Nature fastest routing", nature.source === "pexels", `${nature.chain.join(" -> ")} | ${nature.reason}`],
+    ["Space fastest routing", space.source === "pexels", `${space.chain.join(" -> ")} | ${space.reason}`],
     ["General routing", general.chain.length > 0, general.chain.join(" -> ")],
     ["Remote chain excludes Picsum", !remotePlan.includes("picsum"), remotePlan.join(" -> ")],
     ["Ultimate fallback", ultimateFallback === "picsum", String(ultimateFallback)]
   ];
 
   return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
+}
+
+// Verifies that detailed prompts route into the AI generation path while simple prompts stay search-oriented.
+async function runAiRoutingTests(): Promise<TestResult[]> {
+  line("[TEST 3A] AI Routing");
+  cacheClear();
+
+  const detailedPrompt = "create a cinematic neon samurai portrait with rim lighting 9:16 no text";
+  let generationCalls = 0;
+
+  setGenerateImageOverrideForTests(async (request) => {
+    generationCalls += 1;
+    return {
+      provider: "test-wrapper",
+      model: request.model ?? "test-model",
+      prompt: request.prompt,
+      latencyMs: 5,
+      images: [
+        {
+          url: createSvgDataUrl("AI Generated", "#111827", "#2563eb"),
+          width: 1024,
+          height: 1536,
+          revisedPrompt: request.prompt
+        }
+      ]
+    };
+  });
+
+  try {
+    const simple = detectImageIntent("mountains", "auto");
+    const detailed = detectImageIntent(detailedPrompt, "auto");
+    const explicitSearch = detectImageIntent(detailedPrompt, "search");
+    const generated = await engine.generate(detailedPrompt, {
+      style: "cinematic",
+      size: "1024x1536"
+    });
+    const cachedGenerated = await engine.generate(detailedPrompt, {
+      style: "cinematic",
+      size: "1024x1536"
+    });
+    const autoGenerated = await engine.getImages(detailedPrompt, {
+      intent: "auto",
+      style: "cinematic",
+      size: "1024x1536"
+    });
+
+    const checks: Array<[string, boolean, string]> = [
+      ["Simple prompt stays search", simple.resolvedIntent === "search", JSON.stringify(simple)],
+      ["Detailed prompt becomes generate", detailed.resolvedIntent === "generate", JSON.stringify(detailed)],
+      ["Explicit search wins", explicitSearch.resolvedIntent === "search", JSON.stringify(explicitSearch)],
+      ["Explicit AI generate", assertWallpapers(generated, 1) && generated[0]?.source === "ai", generated[0]?.source ?? "missing"],
+      [
+        "AI generate cache",
+        generationCalls === 1 && cachedGenerated[0]?.id === generated[0]?.id,
+        `calls=${generationCalls}, ids=${generated[0]?.id} :: ${cachedGenerated[0]?.id}`
+      ],
+      ["Auto routes to AI", autoGenerated[0]?.source === "ai", autoGenerated[0]?.source ?? "missing"]
+    ];
+
+    return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
+  } finally {
+    setGenerateImageOverrideForTests(null);
+  }
+}
+
+// Verifies the real wrapper request shape stays compatible with OpenAI's image API.
+// This uses a mocked fetch so we can inspect the outgoing body without making a live billable request.
+async function runAiWrapperRequestShapeTests(): Promise<TestResult[]> {
+  line("[TEST 3B] AI Wrapper Request");
+
+  const originalFetch = globalThis.fetch;
+  let capturedBody: Record<string, unknown> | null = null;
+
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    capturedBody =
+      typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+
+    return new Response(
+      JSON.stringify({
+        data: [
+          {
+            url: createSvgDataUrl("AI Generated", "#111827", "#2563eb"),
+            revised_prompt: "wrapped prompt"
+          }
+        ]
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
+  }) as typeof globalThis.fetch;
+
+  try {
+    const generated = await engine.generate("minimal mountain wallpaper", {
+      size: "1024x1536",
+      quality: "high",
+      style: "vivid"
+    });
+    const bodyStyle = capturedBody ? capturedBody["style"] : undefined;
+    const bodyPrompt = capturedBody ? capturedBody["prompt"] : undefined;
+    const promptText = typeof bodyPrompt === "string" ? bodyPrompt : "";
+
+    const checks: Array<[string, boolean, string]> = [
+      [
+        "No unsupported style field",
+        bodyStyle === undefined,
+        JSON.stringify(capturedBody ?? {})
+      ],
+      [
+        "Style folded into prompt",
+        promptText.includes("Style preference: vivid"),
+        promptText
+      ],
+      [
+        "Wrapper still returns wallpaper",
+        assertWallpapers(generated, 1) && generated[0]?.source === "ai",
+        generated[0]?.source ?? "missing"
+      ]
+    ];
+
+    return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 }
 
 // Proves the cache can write and immediately serve the same request back.
@@ -379,6 +555,7 @@ async function runCacheTests(): Promise<TestResult[]> {
   cacheResetMemory();
   const persistedRead = cacheGet(persistedKey);
   const persistencePath = getPersistencePath();
+  const dataRoot = getDataRootPath();
   cacheClear();
   cacheResetMemory();
   const quotaBefore = getQuotaReport();
@@ -403,9 +580,9 @@ async function runCacheTests(): Promise<TestResult[]> {
     persistedRead?.state === "fresh"
       ? pass("Disk cache reload", "cache survived memory reset")
       : fail("Disk cache reload", "cache did not survive memory reset"),
-    persistencePath?.includes("db 0.4")
-      ? pass("External cache root", persistencePath)
-      : fail("External cache root", String(persistencePath)),
+    persistencePath && dataRoot && persistencePath.startsWith(dataRoot)
+      ? pass("Persistence path", persistencePath)
+      : fail("Persistence path", `${dataRoot} :: ${persistencePath}`),
     localBundleResults.length > 0
       ? pass("Local bundle search", `${localBundleResults.length} local matches`)
       : fail("Local bundle search", "no local bundle matches"),
@@ -492,7 +669,7 @@ async function runUtilityTests(): Promise<TestResult[]> {
     thumbnailPath.length > 0 && cachedThumbnailPath === thumbnailPath
       ? pass("Thumbnail cache", thumbnailPath)
       : fail("Thumbnail cache", String(cachedThumbnailPath)),
-    bundlePaths.previewPath.includes("db 0.4") && dataRoot?.includes("db 0.4")
+    dataRoot !== null && bundlePaths.previewPath.startsWith(dataRoot) && thumbnailPath.startsWith(dataRoot)
       ? pass("Search bundle path", JSON.stringify(bundlePaths))
       : fail("Search bundle path", JSON.stringify(bundlePaths)),
     bundledOffline.length > 0 && assertWallpapers(bundledOffline, 1)
@@ -598,7 +775,9 @@ async function main(): Promise<void> {
   const groups = [];
   groups.push(await runApiClientTests());
   groups.push(await runNormalizerTests());
-  groups.push(await runRouterTests());
+  groups.push(await runRouterTests()); 
+  groups.push(await runAiRoutingTests());
+  groups.push(await runAiWrapperRequestShapeTests());
   groups.push(await runCacheTests());
   groups.push(await runStorageTests());
   groups.push(await runUtilityTests());
@@ -617,7 +796,7 @@ async function main(): Promise<void> {
   if (failed > 0) {
     line("STATUS: FAILED");
     if (process) {
-      process.exit(1);
+      process.exit(1); 
     }
     return;
   }

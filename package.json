@@ -4,8 +4,13 @@
   "private": true,
   "description": "Backend-only wallpaper engine that aggregates multiple free wallpaper/image sources behind a single API.",
   "scripts": {
-    "build": "npx --yes -p typescript tsc -p tsconfig.json",
-    "check": "npx --yes -p typescript tsc -p tsconfig.json --noEmit",
-    "test:engine": "npm run build && node dist/test-runner.js"
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test:engine": "npm run build && node -e \"process.env.WALLPAPER_ENGINE_TEST_DATA_DIR='data/test-runner'; process.env.WALLPAPER_ENGINE_SUPPRESS_FALLBACK_ERRORS='1'; require('./dist/test-runner.js')\"",
+    "auth:otp": "npm run build && node dist/auth/cli.js",
+    "images": "npm run build && node dist/engine/cli.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
   }
 }

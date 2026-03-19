@@ -42,24 +42,45 @@ function readLocalEnvValue(key) {
     }
 }
 // The user can point the engine at any folder they want.
-// In this project we use `C:\Users\Pratham Verma\Desktop\db 0.4`.
+// Tests can override that with a repo-local path so they never depend on host-specific permissions.
 function getConfiguredDataRoot() {
-    const configured = process?.env?.WALLPAPER_ENGINE_DATA_DIR?.trim() ?? readLocalEnvValue("WALLPAPER_ENGINE_DATA_DIR");
+    const configured = process?.env?.WALLPAPER_ENGINE_TEST_DATA_DIR?.trim() ??
+        readLocalEnvValue("WALLPAPER_ENGINE_TEST_DATA_DIR") ??
+        process?.env?.WALLPAPER_ENGINE_DATA_DIR?.trim() ??
+        readLocalEnvValue("WALLPAPER_ENGINE_DATA_DIR");
     return configured && configured.length > 0 ? configured : null;
+}
+function resolveDataRoot(root) {
+    if (typeof require === "undefined") {
+        return root;
+    }
+    try {
+        const path = require("path");
+        if (path.isAbsolute(root)) {
+            return path.normalize(root);
+        }
+        if (typeof process === "undefined" || typeof process.cwd !== "function") {
+            return path.normalize(root);
+        }
+        return path.resolve(process.cwd(), root);
+    }
+    catch {
+        return root;
+    }
 }
 // This resolves the final root data folder.
 // If the user did not override it, we fall back to a local `data/` directory in the repo.
 function getDataRootPath() {
     const configured = getConfiguredDataRoot();
     if (configured) {
-        return configured;
+        return resolveDataRoot(configured);
     }
     if (typeof require === "undefined" || typeof process === "undefined" || typeof process.cwd !== "function") {
         return null;
     }
     try {
         const path = require("path");
-        return path.join(process.cwd(), "data");
+        return path.resolve(process.cwd(), "data");
     }
     catch {
         return null;

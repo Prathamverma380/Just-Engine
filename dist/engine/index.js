@@ -2,7 +2,9 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ENGINE_CONSTANTS = exports.engine = void 0;
 exports.getWallpapers = getWallpapers;
+exports.getImages = getImages;
 exports.search = search;
+exports.generate = generate;
 exports.getFeatured = getFeatured;
 exports.getTrending = getTrending;
 exports.getByCategory = getByCategory;
@@ -14,6 +16,7 @@ exports.healthCheck = healthCheck;
 exports.getStats = getStats;
 // This is the heart of the product.
 // Every UI or script should ideally talk only to this file.
+const ai_1 = require("../ai");
 const cache_1 = require("../cache");
 const clients_1 = require("../clients");
 const config_1 = require("../config");
@@ -31,6 +34,19 @@ const cachedLatencies = [];
 let totalRequests = 0;
 let totalErrors = 0;
 let cacheWarmTimer = null;
+function shouldSuppressHandledSourceLogs() {
+    const value = process?.env?.WALLPAPER_ENGINE_SUPPRESS_FALLBACK_ERRORS?.trim().toLowerCase();
+    return value === "1" || value === "true" || value === "yes";
+}
+function formatErrorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+function logHandledSourceFailure(label, error) {
+    if (shouldSuppressHandledSourceLogs()) {
+        return;
+    }
+    console.warn(`[engine] ${label} failed: ${formatErrorMessage(error)}`);
+}
 // Whenever we return real remote results, quietly save thumbnails/previews in the background.
 function primeSearchBundleCache(wallpapers) {
     if (!config_1.FEATURE_FLAGS.enableOfflineBundle) {
@@ -60,6 +76,38 @@ function decorateFavorites(wallpapers) {
         isFavorite: (0, storage_1.isFavorite)(wallpaper.id)
     }));
 }
+// Builds the public request object used by both the normal search path and the AI path.
+// Keeping this in one place prevents the two entry points from drifting apart over time.
+function buildImageQuery(query, options = {}, intent = config_1.AI_SETTINGS.defaultIntent) {
+    const payload = {
+        query,
+        page: options.page ?? 1,
+        mode: options.mode ?? "search",
+        intent
+    };
+    if (options.category !== undefined) {
+        payload.category = options.category;
+    }
+    if (options.perPage !== undefined) {
+        payload.perPage = options.perPage;
+    }
+    if (options.model !== undefined) {
+        payload.model = options.model;
+    }
+    if (options.size !== undefined) {
+        payload.size = options.size;
+    }
+    if (options.quality !== undefined) {
+        payload.quality = options.quality;
+    }
+    if (options.style !== undefined) {
+        payload.style = options.style;
+    }
+    if (options.negativePrompt !== undefined) {
+        payload.negativePrompt = options.negativePrompt;
+    }
+    return payload;
+}
 // Turns a loose public request into a strict internal request the rest of the engine can trust.
 // Sanitizes public input once so everything downstream can trust the request shape.
 function buildRequest(input) {
@@ -72,6 +120,80 @@ function buildRequest(input) {
         perPage: (0, utils_1.clamp)(input.perPage ?? config_1.REQUEST_DEFAULTS.perPage, 1, config_1.REQUEST_DEFAULTS.maxPerPage),
         mode
     });
+}
+// Converts the public request shape into the stricter AI wrapper request shape.
+// This is where we resolve category, apply AI defaults, and cap the number of generated images.
+function buildAiRequest(input) {
+    const request = {
+        prompt: input.query.trim(),
+        category: (0, router_1.resolveCategory)(input.query, input.category),
+        model: input.model?.trim() || config_1.AI_SETTINGS.defaultModel,
+        size: input.size?.trim() || config_1.AI_SETTINGS.defaultSize,
+        quality: input.quality?.trim() || config_1.AI_SETTINGS.defaultQuality,
+        style: input.style?.trim() || config_1.AI_SETTINGS.defaultStyle,
+        count: Math.min(Math.max(1, input.perPage ?? 1), config_1.AI_SETTINGS.maxImagesPerRequest)
+    };
+    if (input.negativePrompt?.trim()) {
+        request.negativePrompt = input.negativePrompt.trim();
+    }
+    return request;
+}
+// Generated-image cache keys must stay separate from search-result cache keys,
+// otherwise the same prompt could collide between "search" and "generate" modes.
+function generateAiCacheKey(request) {
+    const signature = [
+        request.prompt.trim().toLowerCase(),
+        request.category.trim().toLowerCase(),
+        request.model?.trim().toLowerCase() || config_1.AI_SETTINGS.defaultModel,
+        request.size?.trim().toLowerCase() || config_1.AI_SETTINGS.defaultSize,
+        request.quality?.trim().toLowerCase() || config_1.AI_SETTINGS.defaultQuality,
+        request.style?.trim().toLowerCase() || config_1.AI_SETTINGS.defaultStyle,
+        request.negativePrompt?.trim().toLowerCase() || "",
+        String(request.count ?? 1)
+    ].join("::");
+    return `generate:${(0, utils_1.hashString)(signature)}`;
+}
+// The AI wrapper returns raw generated image details; this maps them into the shared Wallpaper shape
+// so favorites, downloads, and the rest of the app can treat generated images like any other result.
+function buildGeneratedWallpapers(response, request) {
+    return response.images.slice(0, request.count ?? 1).map((image, index) => (0, utils_1.buildWallpaper)({
+        source: "ai",
+        sourceId: `${(0, utils_1.hashString)(`${response.provider}:${response.model}:${request.prompt}:${index}`)}_${index}`,
+        urls: {
+            thumbnail: image.url,
+            preview: image.url,
+            full: image.url,
+            original: image.url
+        },
+        width: image.width,
+        height: image.height,
+        description: image.revisedPrompt ?? request.prompt,
+        tags: [request.category, request.style, "ai", "generated", response.provider, response.model].filter((value) => Boolean(value)),
+        photographerName: "AI Wrapper",
+        photographerUrl: "",
+        category: request.category,
+        query: request.prompt
+    }));
+}
+// The generation pipeline mirrors the normal request pipeline, but intentionally skips the local bundle.
+// For now we only exact-request-cache generated images; we are not deciding long-term storage here yet.
+async function runGenerationPipeline(request) {
+    totalRequests += 1;
+    const startedAt = Date.now();
+    const cacheKey = generateAiCacheKey(request);
+    const cached = (0, cache_1.cacheGet)(cacheKey);
+    if (cached) {
+        cachedLatencies.push(Math.max(1, Date.now() - startedAt));
+        return decorateFavorites(cached.data);
+    }
+    const response = await (0, ai_1.generateImage)(request);
+    const wallpapers = buildGeneratedWallpapers(response, request);
+    if (wallpapers.length === 0) {
+        throw new Error("AI generation produced no wallpapers.");
+    }
+    (0, cache_1.cacheSet)(cacheKey, wallpapers, config_1.CACHE_SETTINGS.ttlMs, config_1.CACHE_SETTINGS.staleTtlMs);
+    freshLatencies.push(Math.max(1, Date.now() - startedAt));
+    return decorateFavorites(wallpapers);
 }
 // This is the full backend pipeline:
 // cache -> router -> client -> normalizer -> cache write -> return.
@@ -115,7 +237,7 @@ async function runPipeline(request) {
             (0, quota_1.recordUsage)(source, {
                 success: false
             });
-            console.error(`[engine] Source ${source} failed`, error);
+            logHandledSourceFailure(`Source ${source}`, error);
         }
     }
     // If remote sources all fail, try stale exact-cache data before the final live fallback.
@@ -144,7 +266,7 @@ async function runPipeline(request) {
             (0, quota_1.recordUsage)(ultimateFallbackSource, {
                 success: false
             });
-            console.error(`[engine] Ultimate fallback ${ultimateFallbackSource} failed`, error);
+            logHandledSourceFailure(`Ultimate fallback ${ultimateFallbackSource}`, error);
         }
     }
     // Shipped offline bundle: real curated local wallpapers embedded with the engine.
@@ -164,15 +286,49 @@ async function runPipeline(request) {
 }
 // Public search entry point used by category pages, free-form search, and future UI screens.
 async function search(query, category, page = 1) {
-    const payload = {
-        query,
-        page,
-        mode: "search"
+    const options = {
+        page
     };
-    if (category) {
-        payload.category = category;
+    if (category !== undefined) {
+        options.category = category;
     }
-    return runPipeline(buildRequest(payload));
+    return runPipeline(buildRequest(buildImageQuery(query, options, "search")));
+}
+// Explicit generation never touches the search-provider router.
+async function generate(prompt, options = {}) {
+    return runGenerationPipeline(buildAiRequest(buildImageQuery(prompt, options, "generate")));
+}
+// `getImages` is the auto-aware public entry point:
+// detailed prompt -> AI generation
+// normal query -> existing provider search
+async function getImages(query, options = {}) {
+    const payload = buildImageQuery(query, options, options.intent ?? config_1.AI_SETTINGS.defaultIntent);
+    const intentDetection = (0, ai_1.detectImageIntent)(payload.query, payload.intent ?? config_1.AI_SETTINGS.defaultIntent);
+    if (intentDetection.resolvedIntent === "generate" && config_1.FEATURE_FLAGS.enableAiGeneration) {
+        try {
+            return runGenerationPipeline(buildAiRequest(payload));
+        }
+        catch (error) {
+            if ((payload.intent ?? config_1.AI_SETTINGS.defaultIntent) === "generate") {
+                throw error;
+            }
+            logHandledSourceFailure("AI generation", error);
+        }
+    }
+    const searchOptions = {};
+    if (payload.category !== undefined) {
+        searchOptions.category = payload.category;
+    }
+    if (payload.page !== undefined) {
+        searchOptions.page = payload.page;
+    }
+    if (payload.perPage !== undefined) {
+        searchOptions.perPage = payload.perPage;
+    }
+    if (payload.mode !== undefined) {
+        searchOptions.mode = payload.mode;
+    }
+    return runPipeline(buildRequest(buildImageQuery(payload.query, searchOptions, "search")));
 }
 // The original doc calls this `getWallpapers`, so keep that public alias for hosts that want the explicit name.
 async function getWallpapers(query, category, page = 1) {
@@ -317,7 +473,9 @@ async function getStats() {
 // This exported object is the intended public backend surface.
 exports.engine = {
     getWallpapers,
+    getImages,
     search,
+    generate,
     getFeatured,
     getTrending,
     getByCategory,

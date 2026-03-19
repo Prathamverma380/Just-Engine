@@ -11,5 +11,7 @@ export declare function getRemaining(source: RemoteWallpaperSource): {
 };
 export declare function hasQuota(source: RemoteWallpaperSource): boolean;
 export declare function isHealthy(source: RemoteWallpaperSource): boolean;
+export declare function getLastLatency(source: RemoteWallpaperSource): number | null;
 export declare function resetHourly(): void;
+export declare function resetQuotaState(): void;
 export declare function getQuotaReport(): Record<RemoteWallpaperSource, SourceQuotaSnapshot>;

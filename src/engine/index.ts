@@ -1,5 +1,6 @@
 // This is the heart of the product.
 // Every UI or script should ideally talk only to this file.
+import { detectImageIntent, generateImage } from "../ai";
 import {
   cacheGet,
   cacheSet,
@@ -10,6 +11,7 @@ import {
 } from "../cache";
 import { getClient } from "../clients";
 import {
+  AI_SETTINGS,
   CACHE_SETTINGS,
   ENGINE_CONSTANTS,
   FEATURED_ROTATION,
@@ -30,14 +32,23 @@ import type {
 } from "../types/wallpaper";
 import {
   average,
+  buildWallpaper,
   cacheWallpaperBundle,
   clamp,
   createOfflineWallpapers,
   dedupeWallpapers,
   formatUptime,
   getDayOfYear,
+  hashString,
   normalizeQuery
 } from "../utils";
+import type { AiGenerationRequest, AiGenerationResponse } from "../ai";
+
+declare const process:
+  | {
+      env?: Record<string, string | undefined>;
+    }
+  | undefined;
 
 // These runtime metrics back `getStats()` and help explain engine behavior over time.
 const engineStartedAt = Date.now();
@@ -46,6 +57,23 @@ const cachedLatencies: number[] = [];
 let totalRequests = 0;
 let totalErrors = 0;
 let cacheWarmTimer: ReturnType<typeof setInterval> | null = null;
+
+function shouldSuppressHandledSourceLogs(): boolean {
+  const value = process?.env?.WALLPAPER_ENGINE_SUPPRESS_FALLBACK_ERRORS?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
+}
+
+function formatErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function logHandledSourceFailure(label: string, error: unknown): void {
+  if (shouldSuppressHandledSourceLogs()) {
+    return;
+  }
+
+  console.warn(`[engine] ${label} failed: ${formatErrorMessage(error)}`);
+}
 
 // Whenever we return real remote results, quietly save thumbnails/previews in the background.
 function primeSearchBundleCache(wallpapers: Wallpaper[]): void {
@@ -83,6 +111,49 @@ function decorateFavorites(wallpapers: Wallpaper[]): Wallpaper[] {
   }));
 }
 
+type ImageRequestOptions = Omit<SearchQuery, "query">;
+
+// Builds the public request object used by both the normal search path and the AI path.
+// Keeping this in one place prevents the two entry points from drifting apart over time.
+function buildImageQuery(query: string, options: ImageRequestOptions = {}, intent = AI_SETTINGS.defaultIntent): SearchQuery {
+  const payload: SearchQuery = {
+    query,
+    page: options.page ?? 1,
+    mode: options.mode ?? "search",
+    intent
+  };
+
+  if (options.category !== undefined) {
+    payload.category = options.category;
+  }
+
+  if (options.perPage !== undefined) {
+    payload.perPage = options.perPage;
+  }
+
+  if (options.model !== undefined) {
+    payload.model = options.model;
+  }
+
+  if (options.size !== undefined) {
+    payload.size = options.size;
+  }
+
+  if (options.quality !== undefined) {
+    payload.quality = options.quality;
+  }
+
+  if (options.style !== undefined) {
+    payload.style = options.style;
+  }
+
+  if (options.negativePrompt !== undefined) {
+    payload.negativePrompt = options.negativePrompt;
+  }
+
+  return payload;
+}
+
 // Turns a loose public request into a strict internal request the rest of the engine can trust.
 // Sanitizes public input once so everything downstream can trust the request shape.
 function buildRequest(input: SearchQuery): ApiClientRequest {
@@ -96,6 +167,95 @@ function buildRequest(input: SearchQuery): ApiClientRequest {
     perPage: clamp(input.perPage ?? REQUEST_DEFAULTS.perPage, 1, REQUEST_DEFAULTS.maxPerPage),
     mode
   });
+}
+
+// Converts the public request shape into the stricter AI wrapper request shape.
+// This is where we resolve category, apply AI defaults, and cap the number of generated images.
+function buildAiRequest(input: SearchQuery): AiGenerationRequest {
+  const request: AiGenerationRequest = {
+    prompt: input.query.trim(),
+    category: resolveCategory(input.query, input.category),
+    model: input.model?.trim() || AI_SETTINGS.defaultModel,
+    size: input.size?.trim() || AI_SETTINGS.defaultSize,
+    quality: input.quality?.trim() || AI_SETTINGS.defaultQuality,
+    style: input.style?.trim() || AI_SETTINGS.defaultStyle,
+    count: Math.min(Math.max(1, input.perPage ?? 1), AI_SETTINGS.maxImagesPerRequest)
+  };
+
+  if (input.negativePrompt?.trim()) {
+    request.negativePrompt = input.negativePrompt.trim();
+  }
+
+  return request;
+}
+
+// Generated-image cache keys must stay separate from search-result cache keys,
+// otherwise the same prompt could collide between "search" and "generate" modes.
+function generateAiCacheKey(request: AiGenerationRequest): string {
+  const signature = [
+    request.prompt.trim().toLowerCase(),
+    request.category.trim().toLowerCase(),
+    request.model?.trim().toLowerCase() || AI_SETTINGS.defaultModel,
+    request.size?.trim().toLowerCase() || AI_SETTINGS.defaultSize,
+    request.quality?.trim().toLowerCase() || AI_SETTINGS.defaultQuality,
+    request.style?.trim().toLowerCase() || AI_SETTINGS.defaultStyle,
+    request.negativePrompt?.trim().toLowerCase() || "",
+    String(request.count ?? 1)
+  ].join("::");
+
+  return `generate:${hashString(signature)}`;
+}
+
+// The AI wrapper returns raw generated image details; this maps them into the shared Wallpaper shape
+// so favorites, downloads, and the rest of the app can treat generated images like any other result.
+function buildGeneratedWallpapers(response: AiGenerationResponse, request: AiGenerationRequest): Wallpaper[] {
+  return response.images.slice(0, request.count ?? 1).map((image, index) =>
+    buildWallpaper({
+      source: "ai",
+      sourceId: `${hashString(`${response.provider}:${response.model}:${request.prompt}:${index}`)}_${index}`,
+      urls: {
+        thumbnail: image.url,
+        preview: image.url,
+        full: image.url,
+        original: image.url
+      },
+      width: image.width,
+      height: image.height,
+      description: image.revisedPrompt ?? request.prompt,
+      tags: [request.category, request.style, "ai", "generated", response.provider, response.model].filter(
+        (value): value is string => Boolean(value)
+      ),
+      photographerName: "AI Wrapper",
+      photographerUrl: "",
+      category: request.category,
+      query: request.prompt
+    })
+  );
+}
+
+// The generation pipeline mirrors the normal request pipeline, but intentionally skips the local bundle.
+// For now we only exact-request-cache generated images; we are not deciding long-term storage here yet.
+async function runGenerationPipeline(request: AiGenerationRequest): Promise<Wallpaper[]> {
+  totalRequests += 1;
+  const startedAt = Date.now();
+  const cacheKey = generateAiCacheKey(request);
+  const cached = cacheGet(cacheKey);
+
+  if (cached) {
+    cachedLatencies.push(Math.max(1, Date.now() - startedAt));
+    return decorateFavorites(cached.data);
+  }
+
+  const response = await generateImage(request);
+  const wallpapers = buildGeneratedWallpapers(response, request);
+
+  if (wallpapers.length === 0) {
+    throw new Error("AI generation produced no wallpapers.");
+  }
+
+  cacheSet(cacheKey, wallpapers, CACHE_SETTINGS.ttlMs, CACHE_SETTINGS.staleTtlMs);
+  freshLatencies.push(Math.max(1, Date.now() - startedAt));
+  return decorateFavorites(wallpapers);
 }
 
 // This is the full backend pipeline:
@@ -144,7 +304,7 @@ async function runPipeline(request: ApiClientRequest): Promise<Wallpaper[]> {
       recordUsage(source, {
         success: false
       });
-      console.error(`[engine] Source ${source} failed`, error);
+      logHandledSourceFailure(`Source ${source}`, error);
     }
   }
 
@@ -176,7 +336,7 @@ async function runPipeline(request: ApiClientRequest): Promise<Wallpaper[]> {
       recordUsage(ultimateFallbackSource, {
         success: false
       });
-      console.error(`[engine] Ultimate fallback ${ultimateFallbackSource} failed`, error);
+      logHandledSourceFailure(`Ultimate fallback ${ultimateFallbackSource}`, error);
     }
   }
 
@@ -199,18 +359,65 @@ async function runPipeline(request: ApiClientRequest): Promise<Wallpaper[]> {
 
 // Public search entry point used by category pages, free-form search, and future UI screens.
 async function search(query: string, category?: string, page = 1): Promise<Wallpaper[]> {
-  const payload: SearchQuery = {
-    query,
-    page,
-    mode: "search"
+  const options: ImageRequestOptions = {
+    page
   };
 
-  if (category) {
-    payload.category = category;
+  if (category !== undefined) {
+    options.category = category;
   }
 
   return runPipeline(
-    buildRequest(payload)
+    buildRequest(
+      buildImageQuery(query, options, "search")
+    )
+  );
+}
+
+// Explicit generation never touches the search-provider router.
+async function generate(prompt: string, options: ImageRequestOptions = {}): Promise<Wallpaper[]> {
+  return runGenerationPipeline(
+    buildAiRequest(buildImageQuery(prompt, options, "generate"))
+  );
+}
+
+// `getImages` is the auto-aware public entry point:
+// detailed prompt -> AI generation
+// normal query -> existing provider search
+async function getImages(query: string, options: ImageRequestOptions = {}): Promise<Wallpaper[]> {
+  const payload = buildImageQuery(query, options, options.intent ?? AI_SETTINGS.defaultIntent);
+  const intentDetection = detectImageIntent(payload.query, payload.intent ?? AI_SETTINGS.defaultIntent);
+
+  if (intentDetection.resolvedIntent === "generate" && FEATURE_FLAGS.enableAiGeneration) {
+    try {
+      return runGenerationPipeline(buildAiRequest(payload));
+    } catch (error) {
+      if ((payload.intent ?? AI_SETTINGS.defaultIntent) === "generate") {
+        throw error;
+      }
+
+      logHandledSourceFailure("AI generation", error);
+    }
+  }
+
+  const searchOptions: ImageRequestOptions = {};
+  if (payload.category !== undefined) {
+    searchOptions.category = payload.category;
+  }
+  if (payload.page !== undefined) {
+    searchOptions.page = payload.page;
+  }
+  if (payload.perPage !== undefined) {
+    searchOptions.perPage = payload.perPage;
+  }
+  if (payload.mode !== undefined) {
+    searchOptions.mode = payload.mode;
+  }
+
+  return runPipeline(
+    buildRequest(
+      buildImageQuery(payload.query, searchOptions, "search")
+    )
   );
 }
 
@@ -392,7 +599,9 @@ async function getStats(): Promise<EngineStats> {
 // This exported object is the intended public backend surface.
 export const engine = {
   getWallpapers,
+  getImages,
   search,
+  generate,
   getFeatured,
   getTrending,
   getByCategory,
@@ -406,7 +615,9 @@ export const engine = {
 
 export {
   getWallpapers,
+  getImages,
   search,
+  generate,
   getFeatured,
   getTrending,
   getByCategory,

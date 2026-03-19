@@ -8,6 +8,7 @@ exports.WALLPAPER_SOURCES = [
     "pixabay",
     "nasa",
     "picsum",
+    "ai",
     "local"
 ];
 exports.REMOTE_WALLPAPER_SOURCES = [

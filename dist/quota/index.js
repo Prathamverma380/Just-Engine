@@ -4,7 +4,9 @@ exports.recordUsage = recordUsage;
 exports.getRemaining = getRemaining;
 exports.hasQuota = hasQuota;
 exports.isHealthy = isHealthy;
+exports.getLastLatency = getLastLatency;
 exports.resetHourly = resetHourly;
+exports.resetQuotaState = resetQuotaState;
 exports.getQuotaReport = getQuotaReport;
 // This file is the traffic controller for provider budgets.
 // It does not call APIs itself; it just remembers how much of each source we have spent.
@@ -122,11 +124,21 @@ function hasQuota(source) {
 function isHealthy(source) {
     return (0, config_1.isSourceConfigured)(source) && runtimeState[source].consecutiveFailures < 3;
 }
+// The router uses the last observed latency as a real-time signal when ranking sources.
+function getLastLatency(source) {
+    return runtimeState[source].lastLatency;
+}
 // This is mostly for testing and forcing rollover behavior.
 // Mostly a testing hook.
 function resetHourly() {
     for (const source of wallpaper_1.REMOTE_WALLPAPER_SOURCES) {
         runtimeState[source].hourlyBucket = currentHourBucket(new Date(Date.now() - 3600000));
+    }
+}
+// Fully clears runtime quota state so routing tests can seed deterministic health and latency data.
+function resetQuotaState() {
+    for (const source of wallpaper_1.REMOTE_WALLPAPER_SOURCES) {
+        runtimeState[source] = initialState();
     }
 }
 // Health and stats screens consume this report instead of reaching into tracker internals.

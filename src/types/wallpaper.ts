@@ -5,6 +5,7 @@ export const WALLPAPER_SOURCES = [
   "pixabay",
   "nasa",
   "picsum",
+  "ai",
   "local"
 ] as const;
 
@@ -35,6 +36,8 @@ export type WallpaperSource = (typeof WALLPAPER_SOURCES)[number];
 // Remote sources are the ones that go through the client -> normalizer pipeline.
 export type RemoteWallpaperSource = (typeof REMOTE_WALLPAPER_SOURCES)[number];
 export type WallpaperCategory = (typeof WALLPAPER_CATEGORIES)[number];
+// `auto` lets the engine decide whether the user asked for search results or a generated image.
+export type ImageIntent = "search" | "generate" | "auto";
 export type RequestMode = "search" | "featured" | "daily" | "category";
 export type WallpaperVariant = "thumbnail" | "preview" | "full" | "original";
 
@@ -87,6 +90,13 @@ export interface SearchQuery {
   page?: number;
   perPage?: number;
   mode?: RequestMode;
+  // These fields are only relevant for the AI generation path.
+  intent?: ImageIntent;
+  model?: string;
+  size?: string;
+  quality?: string;
+  style?: string;
+  negativePrompt?: string;
 }
 
 // This is the fully prepared request shape that internal clients actually consume.

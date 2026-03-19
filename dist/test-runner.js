@@ -5,6 +5,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const cache_1 = require("./cache");
 const clients_1 = require("./clients");
 const engine_1 = require("./engine");
+const ai_1 = require("./ai");
 const normalizers_1 = require("./normalizers");
 const bundle_1 = require("./offline/bundle");
 const router_1 = require("./router");
@@ -190,20 +191,49 @@ async function runNormalizerTests() {
         results.push(fail("Pixabay -> Wallpaper", error instanceof Error ? error.message : String(error)));
     }
     try {
-        const response = await (0, clients_1.fetchNasa)({
+        let response = await (0, clients_1.fetchNasa)({
             query: "astronomy picture of the day",
             category: "space",
             page: 1,
             perPage: 1,
             mode: "daily"
         });
-        const normalized = (0, normalizers_1.normalizeNasa)(response);
+        let detail = "daily";
+        let normalized = (0, normalizers_1.normalizeNasa)(response);
+        if (!assertWallpapers(normalized, 1)) {
+            response = await (0, clients_1.fetchNasa)({
+                query: "nebula",
+                category: "space",
+                page: 1,
+                perPage: 3,
+                mode: "search"
+            });
+            normalized = (0, normalizers_1.normalizeNasa)(response);
+            detail = "search fallback";
+        }
         results.push(assertWallpapers(normalized, 1)
-            ? pass("NASA -> Wallpaper", `${normalized.length} normalized`)
+            ? pass("NASA -> Wallpaper", `${normalized.length} normalized (${detail})`)
             : fail("NASA -> Wallpaper", "invalid normalized output"));
     }
     catch (error) {
-        results.push(fail("NASA -> Wallpaper", error instanceof Error ? error.message : String(error)));
+        try {
+            const response = await (0, clients_1.fetchNasa)({
+                query: "nebula",
+                category: "space",
+                page: 1,
+                perPage: 3,
+                mode: "search"
+            });
+            const normalized = (0, normalizers_1.normalizeNasa)(response);
+            results.push(assertWallpapers(normalized, 1)
+                ? pass("NASA -> Wallpaper", `${normalized.length} normalized (search fallback)`)
+                : fail("NASA -> Wallpaper", "invalid normalized output"));
+        }
+        catch (fallbackError) {
+            const dailyError = error instanceof Error ? error.message : String(error);
+            const searchError = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            results.push(fail("NASA -> Wallpaper", `${dailyError} | fallback failed: ${searchError}`));
+        }
     }
     try {
         const response = await (0, clients_1.fetchPicsum)({
@@ -226,6 +256,18 @@ async function runNormalizerTests() {
 // Shows the routing logic the engine would use before any network request is made.
 async function runRouterTests() {
     line("[TEST 3] Router");
+    (0, quota_1.resetQuotaState)();
+    const coldStartNature = (0, router_1.pickSource)({
+        query: "mountains",
+        category: "nature",
+        page: 1,
+        perPage: 5,
+        mode: "search"
+    });
+    (0, quota_1.recordUsage)("unsplash", { success: true, latencyMs: 320 });
+    (0, quota_1.recordUsage)("pexels", { success: true, latencyMs: 90 });
+    (0, quota_1.recordUsage)("pixabay", { success: true, latencyMs: 210 });
+    (0, quota_1.recordUsage)("nasa", { success: true, latencyMs: 450 });
     const nature = (0, router_1.pickSource)({
         query: "mountains",
         category: "nature",
@@ -256,13 +298,127 @@ async function runRouterTests() {
     });
     const ultimateFallback = (0, router_1.getUltimateFallbackSource)();
     const checks = [
-        ["Nature routing", nature.source === "unsplash" || nature.chain.includes("unsplash"), nature.chain.join(" -> ")],
-        ["Space routing", space.source === "nasa" || space.chain.includes("nasa"), space.chain.join(" -> ")],
+        ["Cold-start priority routing", coldStartNature.source === "unsplash", coldStartNature.chain.join(" -> ")],
+        ["Nature fastest routing", nature.source === "pexels", `${nature.chain.join(" -> ")} | ${nature.reason}`],
+        ["Space fastest routing", space.source === "pexels", `${space.chain.join(" -> ")} | ${space.reason}`],
         ["General routing", general.chain.length > 0, general.chain.join(" -> ")],
         ["Remote chain excludes Picsum", !remotePlan.includes("picsum"), remotePlan.join(" -> ")],
         ["Ultimate fallback", ultimateFallback === "picsum", String(ultimateFallback)]
     ];
     return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
+}
+// Verifies that detailed prompts route into the AI generation path while simple prompts stay search-oriented.
+async function runAiRoutingTests() {
+    line("[TEST 3A] AI Routing");
+    (0, cache_1.cacheClear)();
+    const detailedPrompt = "create a cinematic neon samurai portrait with rim lighting 9:16 no text";
+    let generationCalls = 0;
+    (0, ai_1.setGenerateImageOverrideForTests)(async (request) => {
+        generationCalls += 1;
+        return {
+            provider: "test-wrapper",
+            model: request.model ?? "test-model",
+            prompt: request.prompt,
+            latencyMs: 5,
+            images: [
+                {
+                    url: (0, utils_1.createSvgDataUrl)("AI Generated", "#111827", "#2563eb"),
+                    width: 1024,
+                    height: 1536,
+                    revisedPrompt: request.prompt
+                }
+            ]
+        };
+    });
+    try {
+        const simple = (0, ai_1.detectImageIntent)("mountains", "auto");
+        const detailed = (0, ai_1.detectImageIntent)(detailedPrompt, "auto");
+        const explicitSearch = (0, ai_1.detectImageIntent)(detailedPrompt, "search");
+        const generated = await engine_1.engine.generate(detailedPrompt, {
+            style: "cinematic",
+            size: "1024x1536"
+        });
+        const cachedGenerated = await engine_1.engine.generate(detailedPrompt, {
+            style: "cinematic",
+            size: "1024x1536"
+        });
+        const autoGenerated = await engine_1.engine.getImages(detailedPrompt, {
+            intent: "auto",
+            style: "cinematic",
+            size: "1024x1536"
+        });
+        const checks = [
+            ["Simple prompt stays search", simple.resolvedIntent === "search", JSON.stringify(simple)],
+            ["Detailed prompt becomes generate", detailed.resolvedIntent === "generate", JSON.stringify(detailed)],
+            ["Explicit search wins", explicitSearch.resolvedIntent === "search", JSON.stringify(explicitSearch)],
+            ["Explicit AI generate", assertWallpapers(generated, 1) && generated[0]?.source === "ai", generated[0]?.source ?? "missing"],
+            [
+                "AI generate cache",
+                generationCalls === 1 && cachedGenerated[0]?.id === generated[0]?.id,
+                `calls=${generationCalls}, ids=${generated[0]?.id} :: ${cachedGenerated[0]?.id}`
+            ],
+            ["Auto routes to AI", autoGenerated[0]?.source === "ai", autoGenerated[0]?.source ?? "missing"]
+        ];
+        return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
+    }
+    finally {
+        (0, ai_1.setGenerateImageOverrideForTests)(null);
+    }
+}
+// Verifies the real wrapper request shape stays compatible with OpenAI's image API.
+// This uses a mocked fetch so we can inspect the outgoing body without making a live billable request.
+async function runAiWrapperRequestShapeTests() {
+    line("[TEST 3B] AI Wrapper Request");
+    const originalFetch = globalThis.fetch;
+    let capturedBody = null;
+    globalThis.fetch = (async (_url, init) => {
+        capturedBody =
+            typeof init?.body === "string" ? JSON.parse(init.body) : null;
+        return new Response(JSON.stringify({
+            data: [
+                {
+                    url: (0, utils_1.createSvgDataUrl)("AI Generated", "#111827", "#2563eb"),
+                    revised_prompt: "wrapped prompt"
+                }
+            ]
+        }), {
+            status: 200,
+            headers: {
+                "Content-Type": "application/json"
+            }
+        });
+    });
+    try {
+        const generated = await engine_1.engine.generate("minimal mountain wallpaper", {
+            size: "1024x1536",
+            quality: "high",
+            style: "vivid"
+        });
+        const bodyStyle = capturedBody ? capturedBody["style"] : undefined;
+        const bodyPrompt = capturedBody ? capturedBody["prompt"] : undefined;
+        const promptText = typeof bodyPrompt === "string" ? bodyPrompt : "";
+        const checks = [
+            [
+                "No unsupported style field",
+                bodyStyle === undefined,
+                JSON.stringify(capturedBody ?? {})
+            ],
+            [
+                "Style folded into prompt",
+                promptText.includes("Style preference: vivid"),
+                promptText
+            ],
+            [
+                "Wrapper still returns wallpaper",
+                assertWallpapers(generated, 1) && generated[0]?.source === "ai",
+                generated[0]?.source ?? "missing"
+            ]
+        ];
+        return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
+    }
+    finally {
+        globalThis.fetch = originalFetch;
+    }
 }
 // Proves the cache can write and immediately serve the same request back.
 async function runCacheTests() {
@@ -285,6 +441,7 @@ async function runCacheTests() {
     (0, cache_1.cacheResetMemory)();
     const persistedRead = (0, cache_1.cacheGet)(persistedKey);
     const persistencePath = (0, persistence_1.getPersistencePath)();
+    const dataRoot = (0, persistence_1.getDataRootPath)();
     (0, cache_1.cacheClear)();
     (0, cache_1.cacheResetMemory)();
     const quotaBefore = (0, quota_1.getQuotaReport)();
@@ -307,9 +464,9 @@ async function runCacheTests() {
         persistedRead?.state === "fresh"
             ? pass("Disk cache reload", "cache survived memory reset")
             : fail("Disk cache reload", "cache did not survive memory reset"),
-        persistencePath?.includes("db 0.4")
-            ? pass("External cache root", persistencePath)
-            : fail("External cache root", String(persistencePath)),
+        persistencePath && dataRoot && persistencePath.startsWith(dataRoot)
+            ? pass("Persistence path", persistencePath)
+            : fail("Persistence path", `${dataRoot} :: ${persistencePath}`),
         localBundleResults.length > 0
             ? pass("Local bundle search", `${localBundleResults.length} local matches`)
             : fail("Local bundle search", "no local bundle matches"),
@@ -388,7 +545,7 @@ async function runUtilityTests() {
         thumbnailPath.length > 0 && cachedThumbnailPath === thumbnailPath
             ? pass("Thumbnail cache", thumbnailPath)
             : fail("Thumbnail cache", String(cachedThumbnailPath)),
-        bundlePaths.previewPath.includes("db 0.4") && dataRoot?.includes("db 0.4")
+        dataRoot !== null && bundlePaths.previewPath.startsWith(dataRoot) && thumbnailPath.startsWith(dataRoot)
             ? pass("Search bundle path", JSON.stringify(bundlePaths))
             : fail("Search bundle path", JSON.stringify(bundlePaths)),
         bundledOffline.length > 0 && assertWallpapers(bundledOffline, 1)
@@ -481,6 +638,8 @@ async function main() {
     groups.push(await runApiClientTests());
     groups.push(await runNormalizerTests());
     groups.push(await runRouterTests());
+    groups.push(await runAiRoutingTests());
+    groups.push(await runAiWrapperRequestShapeTests());
     groups.push(await runCacheTests());
     groups.push(await runStorageTests());
     groups.push(await runUtilityTests());

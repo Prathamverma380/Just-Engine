@@ -1,9 +1,10 @@
-export declare const WALLPAPER_SOURCES: readonly ["unsplash", "pexels", "pixabay", "nasa", "picsum", "local"];
+export declare const WALLPAPER_SOURCES: readonly ["unsplash", "pexels", "pixabay", "nasa", "picsum", "ai", "local"];
 export declare const REMOTE_WALLPAPER_SOURCES: readonly ["unsplash", "pexels", "pixabay", "nasa", "picsum"];
 export declare const WALLPAPER_CATEGORIES: readonly ["all", "nature", "abstract", "space", "dark", "minimal", "city", "animals", "illustration", "gradient", "seasonal"];
 export type WallpaperSource = (typeof WALLPAPER_SOURCES)[number];
 export type RemoteWallpaperSource = (typeof REMOTE_WALLPAPER_SOURCES)[number];
 export type WallpaperCategory = (typeof WALLPAPER_CATEGORIES)[number];
+export type ImageIntent = "search" | "generate" | "auto";
 export type RequestMode = "search" | "featured" | "daily" | "category";
 export type WallpaperVariant = "thumbnail" | "preview" | "full" | "original";
 export interface WallpaperUrls {
@@ -43,6 +44,12 @@ export interface SearchQuery {
     page?: number;
     perPage?: number;
     mode?: RequestMode;
+    intent?: ImageIntent;
+    model?: string;
+    size?: string;
+    quality?: string;
+    style?: string;
+    negativePrompt?: string;
 }
 export interface ApiClientRequest {
     query: string;
