@@ -306,7 +306,7 @@ async function getImages(query, options = {}) {
     const intentDetection = (0, ai_1.detectImageIntent)(payload.query, payload.intent ?? config_1.AI_SETTINGS.defaultIntent);
     if (intentDetection.resolvedIntent === "generate" && config_1.FEATURE_FLAGS.enableAiGeneration) {
         try {
-            return runGenerationPipeline(buildAiRequest(payload));
+            return await runGenerationPipeline(buildAiRequest(payload));
         }
         catch (error) {
             if ((payload.intent ?? config_1.AI_SETTINGS.defaultIntent) === "generate") {

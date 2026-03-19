@@ -390,7 +390,7 @@ async function getImages(query: string, options: ImageRequestOptions = {}): Prom
 
   if (intentDetection.resolvedIntent === "generate" && FEATURE_FLAGS.enableAiGeneration) {
     try {
-      return runGenerationPipeline(buildAiRequest(payload));
+      return await runGenerationPipeline(buildAiRequest(payload));
     } catch (error) {
       if ((payload.intent ?? AI_SETTINGS.defaultIntent) === "generate") {
         throw error;
