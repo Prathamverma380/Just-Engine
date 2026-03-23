@@ -131,7 +131,8 @@ function buildAiRequest(input) {
         size: input.size?.trim() || config_1.AI_SETTINGS.defaultSize,
         quality: input.quality?.trim() || config_1.AI_SETTINGS.defaultQuality,
         style: input.style?.trim() || config_1.AI_SETTINGS.defaultStyle,
-        count: Math.min(Math.max(1, input.perPage ?? 1), config_1.AI_SETTINGS.maxImagesPerRequest)
+        count: Math.min(Math.max(1, input.perPage ?? 1), config_1.AI_SETTINGS.maxImagesPerRequest),
+        fallbackChain: [...config_1.AI_SETTINGS.fallbackChain]
     };
     if (input.negativePrompt?.trim()) {
         request.negativePrompt = input.negativePrompt.trim();
@@ -144,6 +145,8 @@ function generateAiCacheKey(request) {
     const signature = [
         request.prompt.trim().toLowerCase(),
         request.category.trim().toLowerCase(),
+        request.provider?.trim().toLowerCase() || "",
+        (request.fallbackChain ?? []).join(","),
         request.model?.trim().toLowerCase() || config_1.AI_SETTINGS.defaultModel,
         request.size?.trim().toLowerCase() || config_1.AI_SETTINGS.defaultSize,
         request.quality?.trim().toLowerCase() || config_1.AI_SETTINGS.defaultQuality,

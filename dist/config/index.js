@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ENGINE_CONSTANTS = exports.CATEGORY_KEYWORDS = exports.FEATURED_ROTATION = exports.CATEGORY_QUERIES = exports.CATEGORY_SOURCE_PRIORITY = exports.SOURCE_LIMITS = exports.CACHE_SETTINGS = exports.AI_SETTINGS = exports.REQUEST_DEFAULTS = exports.FEATURE_FLAGS = exports.API_KEYS = void 0;
+exports.AI_STORAGE_SETTINGS = exports.AI_SETTINGS = exports.AI_PROVIDER_SETTINGS = exports.AI_PROVIDER_LIMITS = exports.ENGINE_CONSTANTS = exports.CATEGORY_KEYWORDS = exports.FEATURED_ROTATION = exports.CATEGORY_QUERIES = exports.CATEGORY_SOURCE_PRIORITY = exports.SOURCE_LIMITS = exports.CACHE_SETTINGS = exports.REQUEST_DEFAULTS = exports.FEATURE_FLAGS = exports.API_KEYS = void 0;
 exports.isSourceConfigured = isSourceConfigured;
 // Read the local env file by hand so the backend works even outside a framework runtime.
 function readDotEnvFile() {
@@ -53,10 +53,6 @@ function readPositiveInteger(value, fallback) {
     const parsed = Number(value?.trim());
     return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
-function readImageIntent(value, fallback) {
-    const normalized = value?.trim().toLowerCase();
-    return normalized === "search" || normalized === "generate" || normalized === "auto" ? normalized : fallback;
-}
 const fileEnv = readDotEnvFile();
 // Runtime env vars win, but `.env.local` gives the backend a working default setup.
 const env = typeof process === "undefined" ? fileEnv : { ...fileEnv, ...(process.env ?? {}) };
@@ -86,21 +82,6 @@ exports.REQUEST_DEFAULTS = {
     maxPerPage: 30,
     requestTimeoutMs: 8000,
     retryAttempts: 2
-};
-// AI generation settings stay centralized here so the wrapper and engine do not hard-code provider details.
-// The wrapper currently targets a generic OpenAI-compatible images endpoint shape.
-exports.AI_SETTINGS = {
-    apiKey: env.AI_IMAGE_API_KEY ?? "",
-    apiUrl: env.AI_IMAGE_API_URL ?? "https://api.openai.com/v1/images/generations",
-    provider: env.AI_IMAGE_PROVIDER ?? "openai-compatible",
-    defaultModel: env.AI_IMAGE_MODEL ?? "gpt-image-1",
-    defaultSize: env.AI_IMAGE_SIZE ?? "1024x1536",
-    defaultQuality: env.AI_IMAGE_QUALITY ?? "high",
-    defaultStyle: env.AI_IMAGE_STYLE ?? "vivid",
-    defaultIntent: readImageIntent(env.AI_IMAGE_DEFAULT_INTENT, "auto"),
-    timeoutMs: readPositiveInteger(env.AI_IMAGE_TIMEOUT_MS, 30000),
-    promptWordThreshold: readPositiveInteger(env.AI_IMAGE_PROMPT_WORD_THRESHOLD, 5),
-    maxImagesPerRequest: 1
 };
 // Cache windows are intentionally long because this product benefits from being aggressively cache-first.
 // Cache defaults are long on purpose because cache is a major product feature, not just an optimization.
@@ -213,3 +194,8 @@ function isSourceConfigured(source) {
     const key = exports.API_KEYS[source];
     return typeof key === "string" && key.trim().length > 0;
 }
+var config_1 = require("../ai/config");
+Object.defineProperty(exports, "AI_PROVIDER_LIMITS", { enumerable: true, get: function () { return config_1.AI_PROVIDER_LIMITS; } });
+Object.defineProperty(exports, "AI_PROVIDER_SETTINGS", { enumerable: true, get: function () { return config_1.AI_PROVIDER_SETTINGS; } });
+Object.defineProperty(exports, "AI_SETTINGS", { enumerable: true, get: function () { return config_1.AI_SETTINGS; } });
+Object.defineProperty(exports, "AI_STORAGE_SETTINGS", { enumerable: true, get: function () { return config_1.AI_STORAGE_SETTINGS; } });

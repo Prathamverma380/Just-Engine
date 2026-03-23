@@ -40,6 +40,7 @@ import {
 } from "./storage";
 import type { ApiClientRequest, Wallpaper } from "./types/wallpaper";
 import {
+  buildWallpaper,
   buildSharePayload,
   cacheWallpaperBundle,
   cacheWallpaperThumbnail,
@@ -49,6 +50,7 @@ import {
   getWallpaperUrl,
   isValidUrl
 } from "./utils";
+import { getCachedWatermarkPath, getDeliveredWallpaperUrl, prepareWallpaperForDelivery } from "./watermark";
 
 declare const process:
   | {
@@ -417,7 +419,7 @@ async function runAiRoutingTests(): Promise<TestResult[]> {
   setGenerateImageOverrideForTests(async (request) => {
     generationCalls += 1;
     return {
-      provider: "test-wrapper",
+      provider: "openai",
       model: request.model ?? "test-model",
       prompt: request.prompt,
       latencyMs: 5,
@@ -428,7 +430,17 @@ async function runAiRoutingTests(): Promise<TestResult[]> {
           height: 1536,
           revisedPrompt: request.prompt
         }
-      ]
+      ],
+      route: {
+        primary: "openai",
+        chain: ["openai"],
+        requestedProvider: request.provider ?? null,
+        attempted: ["openai"],
+        skipped: [],
+        reason: "test override"
+      },
+      quota: null,
+      persisted: false
     };
   });
 
@@ -495,11 +507,27 @@ async function runAiWrapperRequestShapeTests(): Promise<TestResult[]> {
   line("[TEST 3B] AI Wrapper Request");
 
   const originalFetch = globalThis.fetch;
-  let capturedBody: Record<string, unknown> | null = null;
+  const capturedCalls: Array<{
+    url: string;
+    body: Record<string, unknown> | null;
+  }> = [];
 
-  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-    capturedBody =
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const requestUrl =
+      typeof url === "string"
+        ? url
+        : url instanceof URL
+          ? url.toString()
+          : "url" in url && typeof url.url === "string"
+            ? url.url
+            : "";
+    const parsedBody =
       typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : null;
+
+    capturedCalls.push({
+      url: requestUrl,
+      body: parsedBody
+    });
 
     return new Response(
       JSON.stringify({
@@ -525,15 +553,26 @@ async function runAiWrapperRequestShapeTests(): Promise<TestResult[]> {
       quality: "high",
       style: "vivid"
     });
-    const bodyStyle = capturedBody ? capturedBody["style"] : undefined;
-    const bodyPrompt = capturedBody ? capturedBody["prompt"] : undefined;
+    const openAiRequest = capturedCalls.find((call) => {
+      const body = call.body;
+      return Boolean(
+        body &&
+          typeof body["prompt"] === "string" &&
+          typeof body["model"] === "string" &&
+          !("request_payload" in body) &&
+          call.url.includes("/images/generations")
+      );
+    });
+    const requestBody = openAiRequest?.body ?? null;
+    const bodyStyle = requestBody ? requestBody["style"] : undefined;
+    const bodyPrompt = requestBody ? requestBody["prompt"] : undefined;
     const promptText = typeof bodyPrompt === "string" ? bodyPrompt : "";
 
     const checks: Array<[string, boolean, string]> = [
       [
         "No unsupported style field",
         bodyStyle === undefined,
-        JSON.stringify(capturedBody ?? {})
+        JSON.stringify(requestBody ?? {})
       ],
       [
         "Style folded into prompt",
@@ -667,6 +706,42 @@ async function runUtilityTests(): Promise<TestResult[]> {
   const cachedThumbnailPath = getCachedThumbnailPath(sample);
   const bundlePaths = await cacheWallpaperBundle(sample);
   const dataRoot = getDataRootPath();
+  const watermarkSourceUrl = createSvgDataUrl("Watermark Test", "#0f172a", "#2563eb");
+  const watermarkSample = buildWallpaper({
+    source: "local",
+    sourceId: "watermark-test",
+    urls: {
+      thumbnail: watermarkSourceUrl,
+      preview: watermarkSourceUrl,
+      full: watermarkSourceUrl,
+      original: watermarkSourceUrl
+    },
+    width: 1200,
+    height: 2200,
+    description: "Watermark utility sample",
+    tags: ["watermark", "test"],
+    photographerName: "Just Engine",
+    photographerUrl: "",
+    category: "abstract",
+    query: "watermark utility sample"
+  });
+  const watermarkedPreviewUrl = await getDeliveredWallpaperUrl(watermarkSample, "preview", {
+    tier: "free"
+  });
+  const watermarkedWallpaper = await prepareWallpaperForDelivery(watermarkSample, {
+    tier: "free",
+    variants: ["thumbnail", "preview"]
+  });
+  const watermarkCachePath = getCachedWatermarkPath(watermarkSample, "preview", {
+    tier: "free"
+  });
+  const premiumThumbnailPath = await cacheWallpaperThumbnail(watermarkSample);
+  const freeThumbnailPath = await cacheWallpaperThumbnail(watermarkSample, {
+    deliveryTier: "free"
+  });
+  const freeBundlePaths = await cacheWallpaperBundle(watermarkSample, {
+    deliveryTier: "free"
+  });
   const bundledOffline = searchBundledOfflineWallpapers({
     query: "nebula",
     category: "space",
@@ -692,6 +767,25 @@ async function runUtilityTests(): Promise<TestResult[]> {
     dataRoot !== null && bundlePaths.previewPath.startsWith(dataRoot) && thumbnailPath.startsWith(dataRoot)
       ? pass("Search bundle path", JSON.stringify(bundlePaths))
       : fail("Search bundle path", JSON.stringify(bundlePaths)),
+    watermarkedPreviewUrl.startsWith("data:image/svg+xml")
+      ? pass("Watermarked delivery url", "svg watermark generated")
+      : fail("Watermarked delivery url", watermarkedPreviewUrl.slice(0, 60)),
+    Boolean(watermarkedWallpaper.delivery?.isWatermarked) &&
+    watermarkedWallpaper.delivery?.tier === "free" &&
+    Boolean(watermarkedWallpaper.delivery?.transformedVariants.includes("preview"))
+      ? pass("Watermarked wallpaper metadata", JSON.stringify(watermarkedWallpaper.delivery))
+      : fail("Watermarked wallpaper metadata", JSON.stringify(watermarkedWallpaper.delivery)),
+    Boolean(watermarkCachePath && watermarkCachePath.includes("watermarks"))
+      ? pass("Watermark cache path", watermarkCachePath ?? "")
+      : fail("Watermark cache path", watermarkCachePath ?? "missing"),
+    premiumThumbnailPath !== freeThumbnailPath &&
+    freeThumbnailPath.includes("free") &&
+    premiumThumbnailPath.includes("thumbnails")
+      ? pass("Tiered thumbnail cache", `${premiumThumbnailPath} | ${freeThumbnailPath}`)
+      : fail("Tiered thumbnail cache", `${premiumThumbnailPath} | ${freeThumbnailPath}`),
+    freeBundlePaths.previewPath.includes("free")
+      ? pass("Tiered bundle cache", freeBundlePaths.previewPath)
+      : fail("Tiered bundle cache", freeBundlePaths.previewPath),
     bundledOffline.length > 0 && assertWallpapers(bundledOffline, 1)
       ? pass("Offline bundle", `${bundledOffline.length} bundled matches`)
       : fail("Offline bundle", "no bundled matches"),

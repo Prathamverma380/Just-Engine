@@ -4,10 +4,12 @@ import {
   type RateLimitSnapshot,
   type SharePayload,
   type Wallpaper,
+  type WallpaperDeliveryTier,
   type WallpaperSource,
   type WallpaperVariant
 } from "../types/wallpaper";
 import { ensureDataDirectory } from "../persistence";
+import { type WallpaperDeliveryOptions, getDeliveredWallpaperUrl } from "../watermark";
 
 declare function require(name: string): any;
 declare const process:
@@ -378,7 +380,14 @@ export function buildWallpaper(input: {
     category: input.category,
     isFavorite: false,
     downloadedAt: null,
-    cachedAt: input.cachedAt ?? Date.now()
+    cachedAt: input.cachedAt ?? Date.now(),
+    delivery: {
+      tier: "premium",
+      mode: "original",
+      isWatermarked: false,
+      watermarkVersion: null,
+      transformedVariants: []
+    }
   };
 }
 
@@ -561,12 +570,24 @@ export async function downloadWallpaper(
     variant?: WallpaperVariant;
     directoryName?: string;
     fileName?: string;
+    deliveryTier?: WallpaperDeliveryTier;
+    watermarkVersion?: string;
+    watermarkText?: string;
+    watermarkSubtext?: string;
+    forceRefresh?: boolean;
   } = {}
 ): Promise<DownloadResult> {
   const fs = require("fs");
   const path = require("path");
   const variant = options.variant ?? "full";
-  const url = getWallpaperUrl(wallpaper, variant);
+  const watermarkOptions: WallpaperDeliveryOptions = {
+    ...(options.deliveryTier ? { tier: options.deliveryTier } : {}),
+    ...(options.watermarkVersion ? { watermarkVersion: options.watermarkVersion } : {}),
+    ...(options.watermarkText ? { watermarkText: options.watermarkText } : {}),
+    ...(options.watermarkSubtext ? { watermarkSubtext: options.watermarkSubtext } : {}),
+    ...(options.forceRefresh ? { forceRefresh: options.forceRefresh } : {})
+  };
+  const url = await getDeliveredWallpaperUrl(wallpaper, variant, watermarkOptions);
   const response = await fetch(url);
 
   if (!response.ok) {
@@ -578,7 +599,8 @@ export async function downloadWallpaper(
   const extension = inferExtension(url, contentType);
   const downloadsDir = ensureDataDirectory(options.directoryName ?? "downloads");
 
-  const fileName = options.fileName ?? `${wallpaper.id}.${extension}`;
+  const deliverySuffix = options.deliveryTier === "free" ? "-free" : "";
+  const fileName = options.fileName ?? `${wallpaper.id}${deliverySuffix}.${extension}`;
   const filePath = path.join(downloadsDir, fileName);
   fs.writeFileSync(filePath, buffer);
 
@@ -590,10 +612,16 @@ export async function downloadWallpaper(
 }
 
 // Downloads and stores a small local thumbnail so list/grid views can avoid repeated network fetches.
-export async function cacheWallpaperThumbnail(wallpaper: Wallpaper): Promise<string> {
+export async function cacheWallpaperThumbnail(
+  wallpaper: Wallpaper,
+  options: {
+    deliveryTier?: WallpaperDeliveryTier;
+  } = {}
+): Promise<string> {
   const path = require("path");
-  const cacheDir = ensureDataDirectory("thumbnails");
-  const existingPath = getCachedThumbnailPath(wallpaper);
+  const cacheDirectoryName = options.deliveryTier === "free" ? "thumbnails\\free" : "thumbnails";
+  const cacheDir = ensureDataDirectory(cacheDirectoryName);
+  const existingPath = getCachedThumbnailPath(wallpaper, options);
 
   if (existingPath) {
     return existingPath;
@@ -601,15 +629,24 @@ export async function cacheWallpaperThumbnail(wallpaper: Wallpaper): Promise<str
 
   const result = await downloadWallpaper(wallpaper, {
     variant: "thumbnail",
-    directoryName: "thumbnails",
-    fileName: `${wallpaper.id}.${inferExtension(wallpaper.urls.thumbnail, "image/jpeg")}`
+    directoryName: cacheDirectoryName,
+    fileName:
+      options.deliveryTier === "free"
+        ? `${wallpaper.id}-free.svg`
+        : `${wallpaper.id}.${inferExtension(wallpaper.urls.thumbnail, "image/jpeg")}`,
+    ...(options.deliveryTier ? { deliveryTier: options.deliveryTier } : {})
   });
 
-  return path.normalize(result.filePath);
+  return path.normalize(path.join(cacheDir, path.basename(result.filePath)));
 }
 
 // Reads the deterministic thumbnail path if it is already cached on disk.
-export function getCachedThumbnailPath(wallpaper: Wallpaper): string | null {
+export function getCachedThumbnailPath(
+  wallpaper: Wallpaper,
+  options: {
+    deliveryTier?: WallpaperDeliveryTier;
+  } = {}
+): string | null {
   if (typeof require === "undefined") {
     return null;
   }
@@ -617,8 +654,9 @@ export function getCachedThumbnailPath(wallpaper: Wallpaper): string | null {
   try {
     const fs = require("fs");
     const path = require("path");
-    const cacheDir = ensureDataDirectory("thumbnails");
-    const candidates = fs.readdirSync(cacheDir).filter((file: string) => file.startsWith(`${wallpaper.id}.`));
+    const cacheDir = ensureDataDirectory(options.deliveryTier === "free" ? "thumbnails\\free" : "thumbnails");
+    const prefix = options.deliveryTier === "free" ? `${wallpaper.id}-free.` : `${wallpaper.id}.`;
+    const candidates = fs.readdirSync(cacheDir).filter((file: string) => file.startsWith(prefix));
     if (candidates.length === 0) {
       return null;
     }
@@ -631,13 +669,24 @@ export function getCachedThumbnailPath(wallpaper: Wallpaper): string | null {
 
 // Stores both the lightweight thumbnail and a larger preview so browsed images accumulate into a usable local bundle.
 export async function cacheWallpaperBundle(
-  wallpaper: Wallpaper
+  wallpaper: Wallpaper,
+  options: {
+    deliveryTier?: WallpaperDeliveryTier;
+  } = {}
 ): Promise<{ thumbnailPath: string; previewPath: string }> {
-  const thumbnailPath = await cacheWallpaperThumbnail(wallpaper);
+  const previewDirectory = options.deliveryTier === "free" ? "bundle\\free\\previews" : "bundle\\previews";
+  const thumbnailPath = await cacheWallpaperThumbnail(
+    wallpaper,
+    options.deliveryTier ? { deliveryTier: options.deliveryTier } : {}
+  );
   const previewResult = await downloadWallpaper(wallpaper, {
     variant: "preview",
-    directoryName: "bundle\\previews",
-    fileName: `${wallpaper.id}.${inferExtension(wallpaper.urls.preview, "image/jpeg")}`
+    directoryName: previewDirectory,
+    fileName:
+      options.deliveryTier === "free"
+        ? `${wallpaper.id}-free.svg`
+        : `${wallpaper.id}.${inferExtension(wallpaper.urls.preview, "image/jpeg")}`,
+    ...(options.deliveryTier ? { deliveryTier: options.deliveryTier } : {})
   });
 
   return {

@@ -1,7 +1,6 @@
 // This file is the brain of the engine.
 // Keys, limits, categories, defaults, routing preferences, and feature switches live here.
 import {
-  type ImageIntent,
   type QuotaLimits,
   type RemoteWallpaperSource,
   type WallpaperCategory
@@ -81,11 +80,6 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function readImageIntent(value: string | undefined, fallback: ImageIntent): ImageIntent {
-  const normalized = value?.trim().toLowerCase();
-  return normalized === "search" || normalized === "generate" || normalized === "auto" ? normalized : fallback;
-}
-
 const fileEnv = readDotEnvFile();
 // Runtime env vars win, but `.env.local` gives the backend a working default setup.
 const env = typeof process === "undefined" ? fileEnv : { ...fileEnv, ...(process.env ?? {}) };
@@ -118,22 +112,6 @@ export const REQUEST_DEFAULTS = {
   maxPerPage: 30,
   requestTimeoutMs: 8000,
   retryAttempts: 2
-} as const;
-
-// AI generation settings stay centralized here so the wrapper and engine do not hard-code provider details.
-// The wrapper currently targets a generic OpenAI-compatible images endpoint shape.
-export const AI_SETTINGS = {
-  apiKey: env.AI_IMAGE_API_KEY ?? "",
-  apiUrl: env.AI_IMAGE_API_URL ?? "https://api.openai.com/v1/images/generations",
-  provider: env.AI_IMAGE_PROVIDER ?? "openai-compatible",
-  defaultModel: env.AI_IMAGE_MODEL ?? "gpt-image-1",
-  defaultSize: env.AI_IMAGE_SIZE ?? "1024x1536",
-  defaultQuality: env.AI_IMAGE_QUALITY ?? "high",
-  defaultStyle: env.AI_IMAGE_STYLE ?? "vivid",
-  defaultIntent: readImageIntent(env.AI_IMAGE_DEFAULT_INTENT, "auto"),
-  timeoutMs: readPositiveInteger(env.AI_IMAGE_TIMEOUT_MS, 30000),
-  promptWordThreshold: readPositiveInteger(env.AI_IMAGE_PROMPT_WORD_THRESHOLD, 5),
-  maxImagesPerRequest: 1
 } as const;
 
 // Cache windows are intentionally long because this product benefits from being aggressively cache-first.
@@ -255,3 +233,5 @@ export function isSourceConfigured(source: RemoteWallpaperSource): boolean {
   const key = API_KEYS[source];
   return typeof key === "string" && key.trim().length > 0;
 }
+
+export { AI_PROVIDER_LIMITS, AI_PROVIDER_SETTINGS, AI_SETTINGS, AI_STORAGE_SETTINGS } from "../ai/config";

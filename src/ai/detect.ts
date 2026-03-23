@@ -1,4 +1,5 @@
-import { AI_SETTINGS, FEATURE_FLAGS } from "../config";
+import { FEATURE_FLAGS } from "../config";
+import { AI_SETTINGS } from "./config";
 import type { ImageIntent } from "../types/wallpaper";
 import type { ImageIntentDetection } from "./types";
 
@@ -27,7 +28,7 @@ import type { ImageIntentDetection } from "./types";
 // 2. a newly generated image.
 
 // These keyword groups are intentionally cheap heuristics.
-// We only want to distinguish "search for an existing image" from "generate a new image".
+// We only want to distinguish "search for an existing image" from "generating a new image".
 const COMPOSITION_WORDS = [
   "portrait",
   "wide shot",

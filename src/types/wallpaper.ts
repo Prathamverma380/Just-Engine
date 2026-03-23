@@ -40,6 +40,8 @@ export type WallpaperCategory = (typeof WALLPAPER_CATEGORIES)[number];
 export type ImageIntent = "search" | "generate" | "auto";
 export type RequestMode = "search" | "featured" | "daily" | "category";
 export type WallpaperVariant = "thumbnail" | "preview" | "full" | "original";
+export type WallpaperDeliveryTier = "free" | "premium";
+export type WallpaperDeliveryMode = "original" | "watermarked";
 
 // The UI should never care which provider we used.
 // It only needs a consistent set of URLs for list, preview, and download states.
@@ -68,6 +70,15 @@ export interface Photographer {
   avatar?: string;
 }
 
+// Delivery metadata lets hosts distinguish original assets from transformed free-tier derivatives.
+export interface WallpaperDelivery {
+  tier: WallpaperDeliveryTier;
+  mode: WallpaperDeliveryMode;
+  isWatermarked: boolean;
+  watermarkVersion: string | null;
+  transformedVariants: WallpaperVariant[];
+}
+
 // This is the single source of truth for the whole project.
 // Every raw provider response gets normalized into this exact shape.
 export interface Wallpaper {
@@ -81,6 +92,7 @@ export interface Wallpaper {
   isFavorite: boolean;
   downloadedAt: number | null;
   cachedAt: number;
+  delivery?: WallpaperDelivery;
 }
 
 // This is the public request shape before the engine sanitizes it.

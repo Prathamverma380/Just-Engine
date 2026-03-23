@@ -7,6 +7,8 @@ export type WallpaperCategory = (typeof WALLPAPER_CATEGORIES)[number];
 export type ImageIntent = "search" | "generate" | "auto";
 export type RequestMode = "search" | "featured" | "daily" | "category";
 export type WallpaperVariant = "thumbnail" | "preview" | "full" | "original";
+export type WallpaperDeliveryTier = "free" | "premium";
+export type WallpaperDeliveryMode = "original" | "watermarked";
 export interface WallpaperUrls {
     thumbnail: string;
     preview: string;
@@ -26,6 +28,13 @@ export interface Photographer {
     url: string;
     avatar?: string;
 }
+export interface WallpaperDelivery {
+    tier: WallpaperDeliveryTier;
+    mode: WallpaperDeliveryMode;
+    isWatermarked: boolean;
+    watermarkVersion: string | null;
+    transformedVariants: WallpaperVariant[];
+}
 export interface Wallpaper {
     id: string;
     source: WallpaperSource;
@@ -37,6 +46,7 @@ export interface Wallpaper {
     isFavorite: boolean;
     downloadedAt: number | null;
     cachedAt: number;
+    delivery?: WallpaperDelivery;
 }
 export interface SearchQuery {
     query: string;

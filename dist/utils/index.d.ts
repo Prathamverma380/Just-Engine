@@ -1,4 +1,4 @@
-import { type ApiClientRequest, type DownloadResult, type RateLimitSnapshot, type SharePayload, type Wallpaper, type WallpaperSource, type WallpaperVariant } from "../types/wallpaper";
+import { type ApiClientRequest, type DownloadResult, type RateLimitSnapshot, type SharePayload, type Wallpaper, type WallpaperDeliveryTier, type WallpaperSource, type WallpaperVariant } from "../types/wallpaper";
 export declare function formatBytes(bytes: number): string;
 export declare function isValidUrl(value: string): boolean;
 export declare function generateId(prefix?: string): string;
@@ -56,10 +56,21 @@ export declare function downloadWallpaper(wallpaper: Wallpaper, options?: {
     variant?: WallpaperVariant;
     directoryName?: string;
     fileName?: string;
+    deliveryTier?: WallpaperDeliveryTier;
+    watermarkVersion?: string;
+    watermarkText?: string;
+    watermarkSubtext?: string;
+    forceRefresh?: boolean;
 }): Promise<DownloadResult>;
-export declare function cacheWallpaperThumbnail(wallpaper: Wallpaper): Promise<string>;
-export declare function getCachedThumbnailPath(wallpaper: Wallpaper): string | null;
-export declare function cacheWallpaperBundle(wallpaper: Wallpaper): Promise<{
+export declare function cacheWallpaperThumbnail(wallpaper: Wallpaper, options?: {
+    deliveryTier?: WallpaperDeliveryTier;
+}): Promise<string>;
+export declare function getCachedThumbnailPath(wallpaper: Wallpaper, options?: {
+    deliveryTier?: WallpaperDeliveryTier;
+}): string | null;
+export declare function cacheWallpaperBundle(wallpaper: Wallpaper, options?: {
+    deliveryTier?: WallpaperDeliveryTier;
+}): Promise<{
     thumbnailPath: string;
     previewPath: string;
 }>;

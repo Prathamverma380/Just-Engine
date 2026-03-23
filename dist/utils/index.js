@@ -34,6 +34,7 @@ exports.getCachedThumbnailPath = getCachedThumbnailPath;
 exports.cacheWallpaperBundle = cacheWallpaperBundle;
 exports.setAsWallpaper = setAsWallpaper;
 const persistence_1 = require("../persistence");
+const watermark_1 = require("../watermark");
 // Human-friendly byte formatting for logs and future UI surfaces.
 function formatBytes(bytes) {
     if (bytes <= 0) {
@@ -295,7 +296,14 @@ function buildWallpaper(input) {
         category: input.category,
         isFavorite: false,
         downloadedAt: null,
-        cachedAt: input.cachedAt ?? Date.now()
+        cachedAt: input.cachedAt ?? Date.now(),
+        delivery: {
+            tier: "premium",
+            mode: "original",
+            isWatermarked: false,
+            watermarkVersion: null,
+            transformedVariants: []
+        }
     };
 }
 // Some providers overlap heavily, so we dedupe by source + sourceId before returning results.
@@ -448,7 +456,14 @@ async function downloadWallpaper(wallpaper, options = {}) {
     const fs = require("fs");
     const path = require("path");
     const variant = options.variant ?? "full";
-    const url = getWallpaperUrl(wallpaper, variant);
+    const watermarkOptions = {
+        ...(options.deliveryTier ? { tier: options.deliveryTier } : {}),
+        ...(options.watermarkVersion ? { watermarkVersion: options.watermarkVersion } : {}),
+        ...(options.watermarkText ? { watermarkText: options.watermarkText } : {}),
+        ...(options.watermarkSubtext ? { watermarkSubtext: options.watermarkSubtext } : {}),
+        ...(options.forceRefresh ? { forceRefresh: options.forceRefresh } : {})
+    };
+    const url = await (0, watermark_1.getDeliveredWallpaperUrl)(wallpaper, variant, watermarkOptions);
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to download wallpaper: HTTP ${response.status}`);
@@ -457,7 +472,8 @@ async function downloadWallpaper(wallpaper, options = {}) {
     const contentType = response.headers.get("content-type") ?? "image/jpeg";
     const extension = inferExtension(url, contentType);
     const downloadsDir = (0, persistence_1.ensureDataDirectory)(options.directoryName ?? "downloads");
-    const fileName = options.fileName ?? `${wallpaper.id}.${extension}`;
+    const deliverySuffix = options.deliveryTier === "free" ? "-free" : "";
+    const fileName = options.fileName ?? `${wallpaper.id}${deliverySuffix}.${extension}`;
     const filePath = path.join(downloadsDir, fileName);
     fs.writeFileSync(filePath, buffer);
     return {
@@ -467,30 +483,35 @@ async function downloadWallpaper(wallpaper, options = {}) {
     };
 }
 // Downloads and stores a small local thumbnail so list/grid views can avoid repeated network fetches.
-async function cacheWallpaperThumbnail(wallpaper) {
+async function cacheWallpaperThumbnail(wallpaper, options = {}) {
     const path = require("path");
-    const cacheDir = (0, persistence_1.ensureDataDirectory)("thumbnails");
-    const existingPath = getCachedThumbnailPath(wallpaper);
+    const cacheDirectoryName = options.deliveryTier === "free" ? "thumbnails\\free" : "thumbnails";
+    const cacheDir = (0, persistence_1.ensureDataDirectory)(cacheDirectoryName);
+    const existingPath = getCachedThumbnailPath(wallpaper, options);
     if (existingPath) {
         return existingPath;
     }
     const result = await downloadWallpaper(wallpaper, {
         variant: "thumbnail",
-        directoryName: "thumbnails",
-        fileName: `${wallpaper.id}.${inferExtension(wallpaper.urls.thumbnail, "image/jpeg")}`
+        directoryName: cacheDirectoryName,
+        fileName: options.deliveryTier === "free"
+            ? `${wallpaper.id}-free.svg`
+            : `${wallpaper.id}.${inferExtension(wallpaper.urls.thumbnail, "image/jpeg")}`,
+        ...(options.deliveryTier ? { deliveryTier: options.deliveryTier } : {})
     });
-    return path.normalize(result.filePath);
+    return path.normalize(path.join(cacheDir, path.basename(result.filePath)));
 }
 // Reads the deterministic thumbnail path if it is already cached on disk.
-function getCachedThumbnailPath(wallpaper) {
+function getCachedThumbnailPath(wallpaper, options = {}) {
     if (typeof require === "undefined") {
         return null;
     }
     try {
         const fs = require("fs");
         const path = require("path");
-        const cacheDir = (0, persistence_1.ensureDataDirectory)("thumbnails");
-        const candidates = fs.readdirSync(cacheDir).filter((file) => file.startsWith(`${wallpaper.id}.`));
+        const cacheDir = (0, persistence_1.ensureDataDirectory)(options.deliveryTier === "free" ? "thumbnails\\free" : "thumbnails");
+        const prefix = options.deliveryTier === "free" ? `${wallpaper.id}-free.` : `${wallpaper.id}.`;
+        const candidates = fs.readdirSync(cacheDir).filter((file) => file.startsWith(prefix));
         if (candidates.length === 0) {
             return null;
         }
@@ -501,12 +522,16 @@ function getCachedThumbnailPath(wallpaper) {
     }
 }
 // Stores both the lightweight thumbnail and a larger preview so browsed images accumulate into a usable local bundle.
-async function cacheWallpaperBundle(wallpaper) {
-    const thumbnailPath = await cacheWallpaperThumbnail(wallpaper);
+async function cacheWallpaperBundle(wallpaper, options = {}) {
+    const previewDirectory = options.deliveryTier === "free" ? "bundle\\free\\previews" : "bundle\\previews";
+    const thumbnailPath = await cacheWallpaperThumbnail(wallpaper, options.deliveryTier ? { deliveryTier: options.deliveryTier } : {});
     const previewResult = await downloadWallpaper(wallpaper, {
         variant: "preview",
-        directoryName: "bundle\\previews",
-        fileName: `${wallpaper.id}.${inferExtension(wallpaper.urls.preview, "image/jpeg")}`
+        directoryName: previewDirectory,
+        fileName: options.deliveryTier === "free"
+            ? `${wallpaper.id}-free.svg`
+            : `${wallpaper.id}.${inferExtension(wallpaper.urls.preview, "image/jpeg")}`,
+        ...(options.deliveryTier ? { deliveryTier: options.deliveryTier } : {})
     });
     return {
         thumbnailPath,

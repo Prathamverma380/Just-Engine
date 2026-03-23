@@ -179,7 +179,8 @@ function buildAiRequest(input: SearchQuery): AiGenerationRequest {
     size: input.size?.trim() || AI_SETTINGS.defaultSize,
     quality: input.quality?.trim() || AI_SETTINGS.defaultQuality,
     style: input.style?.trim() || AI_SETTINGS.defaultStyle,
-    count: Math.min(Math.max(1, input.perPage ?? 1), AI_SETTINGS.maxImagesPerRequest)
+    count: Math.min(Math.max(1, input.perPage ?? 1), AI_SETTINGS.maxImagesPerRequest),
+    fallbackChain: [...AI_SETTINGS.fallbackChain]
   };
 
   if (input.negativePrompt?.trim()) {
@@ -195,6 +196,8 @@ function generateAiCacheKey(request: AiGenerationRequest): string {
   const signature = [
     request.prompt.trim().toLowerCase(),
     request.category.trim().toLowerCase(),
+    request.provider?.trim().toLowerCase() || "",
+    (request.fallbackChain ?? []).join(","),
     request.model?.trim().toLowerCase() || AI_SETTINGS.defaultModel,
     request.size?.trim().toLowerCase() || AI_SETTINGS.defaultSize,
     request.quality?.trim().toLowerCase() || AI_SETTINGS.defaultQuality,

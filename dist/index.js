@@ -25,5 +25,7 @@ __exportStar(require("./router"), exports);
 __exportStar(require("./persistence"), exports);
 __exportStar(require("./storage"), exports);
 __exportStar(require("./auth"), exports);
+__exportStar(require("./ai"), exports);
+__exportStar(require("./watermark"), exports);
 __exportStar(require("./engine"), exports);
 __exportStar(require("./utils"), exports);
