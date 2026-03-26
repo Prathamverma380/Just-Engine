@@ -5,7 +5,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const cache_1 = require("./cache");
 const clients_1 = require("./clients");
 const engine_1 = require("./engine");
+const access_1 = require("./access");
 const ai_1 = require("./ai");
+const auth_1 = require("./auth");
 const normalizers_1 = require("./normalizers");
 const bundle_1 = require("./offline/bundle");
 const router_1 = require("./router");
@@ -36,6 +38,64 @@ function formatRateLimit(rateLimit) {
     }
     return `remaining=${rateLimit.remaining}`;
 }
+function createTestSession(userId, email = `${userId}@example.com`) {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    return {
+        accessToken: `test-access-${userId}`,
+        refreshToken: `test-refresh-${userId}`,
+        expiresIn: 3600,
+        expiresAt: nowSeconds + 3600,
+        tokenType: "bearer",
+        user: {
+            id: userId,
+            email,
+            appMetadata: {
+                provider: "email"
+            },
+            userMetadata: {},
+            identities: []
+        }
+    };
+}
+function setTestViewerAccess(state) {
+    if (!state.authenticated) {
+        (0, auth_1.setAuthSessionForTests)(null);
+        (0, access_1.setViewerAccessOverrideForTests)({
+            session: null
+        });
+        return null;
+    }
+    const session = createTestSession(state.userId, state.email);
+    (0, auth_1.setAuthSessionForTests)(session);
+    (0, access_1.setViewerAccessOverrideForTests)({
+        session,
+        entitlement: {
+            userId: session.user.id,
+            plan: state.plan,
+            status: "active",
+            source: "test",
+            updatedAt: new Date().toISOString()
+        }
+    });
+    return session;
+}
+function setDefaultTestViewer() {
+    return setTestViewerAccess({
+        authenticated: true,
+        plan: "premium",
+        userId: "viewer-premium",
+        email: "premium@example.com"
+    });
+}
+async function captureErrorCode(action) {
+    try {
+        await action();
+        return null;
+    }
+    catch (error) {
+        return error instanceof Error ? error.message : String(error);
+    }
+}
 // Measures end-to-end duration for higher-level engine calls.
 async function measure(fn) {
     const startedAt = Date.now();
@@ -53,6 +113,13 @@ function assertWallpapers(items, minimum = 1) {
             (0, utils_1.isValidUrl)(item.urls.preview) &&
             (0, utils_1.isValidUrl)(item.urls.full) &&
             (0, utils_1.isValidUrl)(item.urls.original)));
+}
+function hasRemoteUsageChanged(before, after) {
+    return (before.unsplash.totalRequests !== after.unsplash.totalRequests ||
+        before.pexels.totalRequests !== after.pexels.totalRequests ||
+        before.pixabay.totalRequests !== after.pixabay.totalRequests ||
+        before.nasa.totalRequests !== after.nasa.totalRequests ||
+        before.picsum.totalRequests !== after.picsum.totalRequests);
 }
 // Verifies that every live source is reachable and returns data with the configured keys.
 async function runApiClientTests() {
@@ -265,6 +332,13 @@ async function runRouterTests() {
         perPage: 5,
         mode: "search"
     });
+    const coldStartSpace = (0, router_1.pickSource)({
+        query: "nebula wallpaper",
+        category: "space",
+        page: 1,
+        perPage: 5,
+        mode: "search"
+    });
     (0, quota_1.recordUsage)("unsplash", { success: true, latencyMs: 320 });
     (0, quota_1.recordUsage)("pexels", { success: true, latencyMs: 90 });
     (0, quota_1.recordUsage)("pixabay", { success: true, latencyMs: 210 });
@@ -300,6 +374,7 @@ async function runRouterTests() {
     const ultimateFallback = (0, router_1.getUltimateFallbackSource)();
     const checks = [
         ["Cold-start priority routing", coldStartNature.source === "unsplash", coldStartNature.chain.join(" -> ")],
+        ["Cold-start space routing", coldStartSpace.source === "unsplash", coldStartSpace.chain.join(" -> ")],
         ["Nature fastest routing", nature.source === "pexels", `${nature.chain.join(" -> ")} | ${nature.reason}`],
         ["Space fastest routing", space.source === "pexels", `${space.chain.join(" -> ")} | ${space.reason}`],
         ["General routing", general.chain.length > 0, general.chain.join(" -> ")],
@@ -394,11 +469,138 @@ async function runAiRoutingTests() {
         (0, ai_1.setGenerateImageOverrideForTests)(null);
     }
 }
+// Verifies the approved product rules:
+// signed-out users cannot browse or generate,
+// signed-in free users can browse normal wallpapers,
+// and AI generation remains premium-only even when the AI cache is already warm.
+async function runAccessControlTests() {
+    line("[TEST 3D] Access Control");
+    (0, cache_1.cacheClear)();
+    (0, cache_1.localBundleClear)();
+    (0, storage_1.storageClear)();
+    const browseQuery = "access control canyon";
+    const category = "nature";
+    const localSample = (0, utils_1.buildWallpaper)({
+        source: "local",
+        sourceId: "access-control-browse",
+        urls: {
+            thumbnail: (0, utils_1.createSvgDataUrl)("Access Browse", "#1e3a8a", "#0ea5e9"),
+            preview: (0, utils_1.createSvgDataUrl)("Access Browse", "#1e3a8a", "#0ea5e9"),
+            full: (0, utils_1.createSvgDataUrl)("Access Browse", "#1e3a8a", "#0ea5e9"),
+            original: (0, utils_1.createSvgDataUrl)("Access Browse", "#1e3a8a", "#0ea5e9")
+        },
+        width: 1440,
+        height: 2560,
+        description: "Access control canyon wallpaper",
+        tags: ["access", "control", "canyon"],
+        photographerName: "Access Tests",
+        photographerUrl: "",
+        category,
+        query: browseQuery
+    });
+    const aiPrompt = "create a cinematic access control neon skyline poster with rim lighting 9:16 no text";
+    (0, cache_1.localBundleUpsert)([localSample]);
+    (0, ai_1.setGenerateImageOverrideForTests)(async (request) => ({
+        provider: request.provider ?? "openai",
+        model: request.model ?? "test-access-model",
+        prompt: request.prompt,
+        latencyMs: 5,
+        images: [
+            {
+                url: (0, utils_1.createSvgDataUrl)("Access AI", "#111827", "#22c55e"),
+                width: 1024,
+                height: 1536,
+                revisedPrompt: request.prompt
+            }
+        ],
+        route: {
+            primary: request.provider ?? "openai",
+            chain: [request.provider ?? "openai"],
+            requestedProvider: request.provider ?? null,
+            attempted: [request.provider ?? "openai"],
+            skipped: [],
+            reason: "test access override"
+        },
+        quota: null,
+        persisted: false
+    }));
+    try {
+        setTestViewerAccess({
+            authenticated: false
+        });
+        const unauthenticatedSearchCode = await captureErrorCode(() => engine_1.engine.search(browseQuery, category, 1));
+        setTestViewerAccess({
+            authenticated: true,
+            plan: "free",
+            userId: "viewer-free",
+            email: "free@example.com"
+        });
+        const freeSearch = await engine_1.engine.search(browseQuery, category, 1);
+        setDefaultTestViewer();
+        const premiumGenerated = await engine_1.engine.generate(aiPrompt, {
+            provider: "openai",
+            perPage: 1,
+            persist: false
+        });
+        setTestViewerAccess({
+            authenticated: false
+        });
+        const unauthenticatedAiCode = await captureErrorCode(() => engine_1.engine.generate(aiPrompt, {
+            provider: "openai",
+            perPage: 1,
+            persist: false
+        }));
+        setTestViewerAccess({
+            authenticated: true,
+            plan: "free",
+            userId: "viewer-free",
+            email: "free@example.com"
+        });
+        const freeAiCode = await captureErrorCode(() => engine_1.engine.generate(aiPrompt, {
+            provider: "openai",
+            perPage: 1,
+            persist: false
+        }));
+        const freeAutoAiCode = await captureErrorCode(() => engine_1.engine.getImages(aiPrompt, {
+            intent: "auto",
+            provider: "openai",
+            perPage: 1,
+            persist: false
+        }));
+        return [
+            unauthenticatedSearchCode === "authentication_required"
+                ? pass("Signed-out browse blocked", unauthenticatedSearchCode)
+                : fail("Signed-out browse blocked", String(unauthenticatedSearchCode)),
+            assertWallpapers(freeSearch, 1) && freeSearch[0]?.id === localSample.id && freeSearch[0]?.source === "local"
+                ? pass("Free browse allowed", `${freeSearch[0]?.source} :: ${freeSearch[0]?.id}`)
+                : fail("Free browse allowed", `${freeSearch[0]?.source ?? "missing"} :: ${freeSearch[0]?.id ?? "missing"}`),
+            assertWallpapers(premiumGenerated, 1) && premiumGenerated[0]?.source === "ai"
+                ? pass("Premium AI allowed", premiumGenerated[0]?.source ?? "missing")
+                : fail("Premium AI allowed", premiumGenerated[0]?.source ?? "missing"),
+            unauthenticatedAiCode === "authentication_required"
+                ? pass("Signed-out AI blocked", unauthenticatedAiCode)
+                : fail("Signed-out AI blocked", String(unauthenticatedAiCode)),
+            freeAiCode === "subscription_required"
+                ? pass("Free AI blocked", freeAiCode)
+                : fail("Free AI blocked", String(freeAiCode)),
+            freeAutoAiCode === "subscription_required"
+                ? pass("Free auto AI blocked", freeAutoAiCode)
+                : fail("Free auto AI blocked", String(freeAutoAiCode))
+        ];
+    }
+    finally {
+        (0, ai_1.setGenerateImageOverrideForTests)(null);
+        setDefaultTestViewer();
+        (0, cache_1.cacheClear)();
+        (0, cache_1.localBundleClear)();
+    }
+}
 // Verifies the real wrapper request shape stays compatible with OpenAI's image API.
 // This uses a mocked fetch so we can inspect the outgoing body without making a live billable request.
 async function runAiWrapperRequestShapeTests() {
     line("[TEST 3B] AI Wrapper Request");
     const originalFetch = globalThis.fetch;
+    const originalOpenAiSettings = { ...ai_1.AI_PROVIDER_SETTINGS.openai };
     const capturedCalls = [];
     globalThis.fetch = (async (url, init) => {
         const requestUrl = typeof url === "string"
@@ -428,10 +630,20 @@ async function runAiWrapperRequestShapeTests() {
         });
     });
     try {
+        Object.assign(ai_1.AI_PROVIDER_SETTINGS.openai, {
+            ...ai_1.AI_PROVIDER_SETTINGS.openai,
+            enabled: true,
+            apiKey: "test-openai-key",
+            apiUrl: "https://api.openai.com/v1/images/generations",
+            defaultModel: "dall-e-3",
+            defaultQuality: "hd"
+        });
         const generated = await engine_1.engine.generate("minimal mountain wallpaper", {
+            provider: "openai",
             size: "1024x1536",
             quality: "high",
-            style: "vivid"
+            style: "vivid",
+            perPage: 3
         });
         const openAiRequest = capturedCalls.find((call) => {
             const body = call.body;
@@ -446,6 +658,21 @@ async function runAiWrapperRequestShapeTests() {
         const bodyPrompt = requestBody ? requestBody["prompt"] : undefined;
         const promptText = typeof bodyPrompt === "string" ? bodyPrompt : "";
         const checks = [
+            [
+                "Pinned OpenAI request",
+                requestBody?.["model"] === "dall-e-3",
+                JSON.stringify(requestBody ?? {})
+            ],
+            [
+                "DALL-E 3 quality normalized",
+                requestBody?.["quality"] === "hd",
+                JSON.stringify(requestBody ?? {})
+            ],
+            [
+                "DALL-E 3 caps image count",
+                requestBody?.["n"] === 1,
+                JSON.stringify(requestBody ?? {})
+            ],
             [
                 "No unsupported style field",
                 bodyStyle === undefined,
@@ -465,12 +692,132 @@ async function runAiWrapperRequestShapeTests() {
         return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
     }
     finally {
+        Object.assign(ai_1.AI_PROVIDER_SETTINGS.openai, originalOpenAiSettings);
         globalThis.fetch = originalFetch;
+    }
+}
+async function runAiProviderSelectionTests() {
+    line("[TEST 3C] AI Provider Selection");
+    (0, cache_1.cacheClear)();
+    const originalSiliconFlowSettings = { ...ai_1.AI_PROVIDER_SETTINGS.silicon_flow };
+    const originalOpenAiSettings = { ...ai_1.AI_PROVIDER_SETTINGS.openai };
+    const originalNanoBananaSettings = { ...ai_1.AI_PROVIDER_SETTINGS.nano_banana };
+    let siliconFlowCalls = 0;
+    let openAiCalls = 0;
+    let nanoBananaCalls = 0;
+    Object.assign(ai_1.AI_PROVIDER_SETTINGS.silicon_flow, {
+        ...ai_1.AI_PROVIDER_SETTINGS.silicon_flow,
+        enabled: true,
+        apiKey: "test-silicon-flow-key",
+        apiUrl: "https://api.siliconflow.com/v1/images/generations"
+    });
+    Object.assign(ai_1.AI_PROVIDER_SETTINGS.openai, {
+        ...ai_1.AI_PROVIDER_SETTINGS.openai,
+        enabled: true,
+        apiKey: "test-openai-key",
+        apiUrl: "https://api.openai.com/v1/images/generations"
+    });
+    Object.assign(ai_1.AI_PROVIDER_SETTINGS.nano_banana, {
+        ...ai_1.AI_PROVIDER_SETTINGS.nano_banana,
+        enabled: true,
+        apiKey: "test-gemini-key",
+        apiUrl: "https://generativelanguage.googleapis.com/v1beta/models"
+    });
+    (0, ai_1.setAiProviderOverrideForTests)("silicon_flow", async (context) => {
+        siliconFlowCalls += 1;
+        return {
+            provider: "silicon_flow",
+            model: context.resolvedModel,
+            prompt: context.request.prompt,
+            latencyMs: 5,
+            images: [
+                {
+                    url: (0, utils_1.createSvgDataUrl)("SiliconFlow", "#0f172a", "#0ea5e9"),
+                    width: 720,
+                    height: 1280
+                }
+            ],
+            rateLimit: null
+        };
+    });
+    (0, ai_1.setAiProviderOverrideForTests)("openai", async () => {
+        openAiCalls += 1;
+        throw new Error("OpenAI should not be called for a pinned SiliconFlow request.");
+    });
+    (0, ai_1.setAiProviderOverrideForTests)("nano_banana", async () => {
+        nanoBananaCalls += 1;
+        throw new Error("Nano Banana should not be called for a pinned SiliconFlow request.");
+    });
+    try {
+        const plan = (0, ai_1.getAiProviderPlan)({
+            prompt: "cinematic aurora skyline",
+            category: "space",
+            provider: "silicon_flow"
+        });
+        const generated = await engine_1.engine.generate("cinematic aurora skyline", {
+            provider: "silicon_flow",
+            size: "928x1664"
+        });
+        const checks = [
+            [
+                "Explicit provider plan stays pinned",
+                plan.primary === "silicon_flow" && plan.chain.length === 1 && plan.chain[0] === "silicon_flow",
+                JSON.stringify(plan)
+            ],
+            [
+                "Pinned provider avoids fallback providers",
+                siliconFlowCalls === 1 && openAiCalls === 0 && nanoBananaCalls === 0,
+                `silicon=${siliconFlowCalls}, openai=${openAiCalls}, nano=${nanoBananaCalls}`
+            ],
+            [
+                "Pinned provider still returns wallpaper",
+                assertWallpapers(generated, 1) && generated[0]?.source === "ai",
+                generated[0]?.source ?? "missing"
+            ]
+        ];
+        return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
+    }
+    finally {
+        (0, ai_1.setAiProviderOverrideForTests)("silicon_flow", null);
+        (0, ai_1.setAiProviderOverrideForTests)("openai", null);
+        (0, ai_1.setAiProviderOverrideForTests)("nano_banana", null);
+        Object.assign(ai_1.AI_PROVIDER_SETTINGS.silicon_flow, originalSiliconFlowSettings);
+        Object.assign(ai_1.AI_PROVIDER_SETTINGS.openai, originalOpenAiSettings);
+        Object.assign(ai_1.AI_PROVIDER_SETTINGS.nano_banana, originalNanoBananaSettings);
+        (0, cache_1.cacheClear)();
     }
 }
 // Proves the cache can write and immediately serve the same request back.
 async function runCacheTests() {
     line("[TEST 4] Cache");
+    (0, cache_1.cacheClear)();
+    (0, cache_1.localBundleClear)();
+    const desertOnlyWallpaper = (0, utils_1.buildWallpaper)({
+        source: "local",
+        sourceId: "cache-desert-seed",
+        urls: {
+            thumbnail: (0, utils_1.createSvgDataUrl)("Desert Seed", "#7c2d12", "#f59e0b"),
+            preview: (0, utils_1.createSvgDataUrl)("Desert Seed", "#7c2d12", "#f59e0b"),
+            full: (0, utils_1.createSvgDataUrl)("Desert Seed", "#7c2d12", "#f59e0b"),
+            original: (0, utils_1.createSvgDataUrl)("Desert Seed", "#7c2d12", "#f59e0b")
+        },
+        width: 1440,
+        height: 2560,
+        description: "Endless desert dunes under a clear sky",
+        tags: ["desert", "sand", "dunes"],
+        photographerName: "Cache Test",
+        photographerUrl: "",
+        category: "nature",
+        query: "desert"
+    });
+    (0, cache_1.localBundleUpsert)([desertOnlyWallpaper]);
+    (0, cache_1.cacheClear)();
+    (0, cache_1.cacheResetMemory)();
+    const irrelevantLocalResults = (0, cache_1.localBundleSearch)("mountains", "nature", 1, 15);
+    const irrelevantQuotaBefore = (0, quota_1.getQuotaReport)();
+    const remoteMountainResults = await engine_1.engine.search("mountains", "nature", 1);
+    const irrelevantQuotaAfter = (0, quota_1.getQuotaReport)();
+    const usedRemoteForIrrelevant = hasRemoteUsageChanged(irrelevantQuotaBefore, irrelevantQuotaAfter);
     (0, cache_1.cacheClear)();
     (0, cache_1.localBundleClear)();
     const key = (0, cache_1.generateCacheKey)("mountains", "nature", 1);
@@ -496,12 +843,14 @@ async function runCacheTests() {
     const localBundleResults = (0, cache_1.localBundleSearch)("mountains", "nature", 1, 15);
     const localServed = await engine_1.engine.search("mountains", "nature", 1);
     const quotaAfter = (0, quota_1.getQuotaReport)();
-    const usedRemoteApis = quotaAfter.unsplash.totalRequests !== quotaBefore.unsplash.totalRequests ||
-        quotaAfter.pexels.totalRequests !== quotaBefore.pexels.totalRequests ||
-        quotaAfter.pixabay.totalRequests !== quotaBefore.pixabay.totalRequests ||
-        quotaAfter.nasa.totalRequests !== quotaBefore.nasa.totalRequests ||
-        quotaAfter.picsum.totalRequests !== quotaBefore.picsum.totalRequests;
+    const usedRemoteApis = hasRemoteUsageChanged(quotaBefore, quotaAfter);
     return [
+        irrelevantLocalResults.length === 0
+            ? pass("Local bundle relevance", "irrelevant category results are not reused")
+            : fail("Local bundle relevance", JSON.stringify(irrelevantLocalResults.slice(0, 3).map((item) => item.id))),
+        remoteMountainResults.length > 0 && usedRemoteForIrrelevant
+            ? pass("Irrelevant local bundle bypass", "new query fell back to remote search")
+            : fail("Irrelevant local bundle bypass", `remote usage changed=${usedRemoteForIrrelevant}`),
         sample.length > 0 ? pass("Cache write", `${sample.length} items stored`) : fail("Cache write", "no items to store"),
         readFresh ? pass("Cache read", `${readFresh.state} hit`) : fail("Cache read", "cache miss"),
         readAgain ? pass("Cache repeat read", `${readAgain.state} hit`) : fail("Cache repeat read", "cache miss"),
@@ -669,6 +1018,14 @@ async function runPipelineTests() {
     const trending = await measure(() => engine_1.engine.getTrending());
     const daily = await measure(() => engine_1.engine.getDaily());
     const warmed = await measure(() => engine_1.engine.warmCache(["nature", "space"]));
+    (0, cache_1.cacheClear)();
+    (0, cache_1.localBundleClear)();
+    await engine_1.engine.search("nebula", "space", 1);
+    (0, cache_1.cacheClear)();
+    const dailyQuotaBefore = (0, quota_1.getQuotaReport)();
+    const dailyAfterLocalSeed = await measure(() => engine_1.engine.getDaily());
+    const dailyQuotaAfter = (0, quota_1.getQuotaReport)();
+    const usedRemoteForDaily = hasRemoteUsageChanged(dailyQuotaBefore, dailyQuotaAfter);
     return [
         assertWallpapers(first.result, 1)
             ? pass("Search fresh", `${first.result.length} results, ${first.durationMs}ms`)
@@ -688,6 +1045,9 @@ async function runPipelineTests() {
         daily.result?.id
             ? pass("Daily", `${daily.result.source} daily wallpaper, ${daily.durationMs}ms`)
             : fail("Daily", "daily wallpaper missing"),
+        dailyAfterLocalSeed.result?.id && usedRemoteForDaily
+            ? pass("Daily bypasses local bundle", `${dailyAfterLocalSeed.result.source}, ${dailyAfterLocalSeed.durationMs}ms`)
+            : fail("Daily bypasses local bundle", `remote usage changed=${usedRemoteForDaily}`),
         Object.values(warmed.result).every((count) => count > 0)
             ? pass("Warm cache", `${JSON.stringify(warmed.result)}, ${warmed.durationMs}ms`)
             : fail("Warm cache", JSON.stringify(warmed.result))
@@ -737,12 +1097,15 @@ async function main() {
     line("===============================================");
     line("WALLPAPER ENGINE BACKEND TEST RUNNER");
     line("===============================================");
+    setDefaultTestViewer();
     const groups = [];
     groups.push(await runApiClientTests());
     groups.push(await runNormalizerTests());
     groups.push(await runRouterTests());
     groups.push(await runAiRoutingTests());
     groups.push(await runAiWrapperRequestShapeTests());
+    groups.push(await runAiProviderSelectionTests());
+    groups.push(await runAccessControlTests());
     groups.push(await runCacheTests());
     groups.push(await runStorageTests());
     groups.push(await runUtilityTests());

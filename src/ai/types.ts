@@ -3,7 +3,7 @@ import type { ImageIntent } from "../types/wallpaper";
 // Shared AI vocabulary.
 // This file is the contract layer for the whole AI subsystem:
 // providers, routing, quota tracking, persistence, and normalized responses.
-export const AI_PROVIDER_NAMES = ["openai", "nano_banana", "eleven_labs"] as const;
+export const AI_PROVIDER_NAMES = ["openai", "nano_banana", "silicon_flow"] as const;
 
 export type AiProviderName = (typeof AI_PROVIDER_NAMES)[number];
 // Different providers return hosted URLs, base64 payloads, or both.

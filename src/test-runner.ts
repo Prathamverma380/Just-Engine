@@ -7,11 +7,20 @@ import {
   cacheSet,
   generateCacheKey,
   localBundleClear,
-  localBundleSearch
+  localBundleSearch,
+  localBundleUpsert
 } from "./cache";
 import { fetchNasa, fetchPexels, fetchPicsum, fetchPixabay, fetchUnsplash } from "./clients";
 import { engine } from "./engine";
-import { detectImageIntent, setGenerateImageOverrideForTests } from "./ai";
+import { setViewerAccessOverrideForTests } from "./access";
+import {
+  AI_PROVIDER_SETTINGS,
+  detectImageIntent,
+  getAiProviderPlan,
+  setAiProviderOverrideForTests,
+  setGenerateImageOverrideForTests
+} from "./ai";
+import { setAuthSessionForTests, type SupabaseSession } from "./auth";
 import {
   normalizeNasa,
   normalizePexels,
@@ -93,6 +102,81 @@ function formatRateLimit(rateLimit: { remaining: number | "infinite" | null } | 
   return `remaining=${rateLimit.remaining}`;
 }
 
+function createTestSession(userId: string, email = `${userId}@example.com`): SupabaseSession {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+
+  return {
+    accessToken: `test-access-${userId}`,
+    refreshToken: `test-refresh-${userId}`,
+    expiresIn: 3600,
+    expiresAt: nowSeconds + 3600,
+    tokenType: "bearer",
+    user: {
+      id: userId,
+      email,
+      appMetadata: {
+        provider: "email"
+      },
+      userMetadata: {},
+      identities: []
+    }
+  };
+}
+
+function setTestViewerAccess(
+  state:
+    | {
+        authenticated: false;
+      }
+    | {
+        authenticated: true;
+        plan: "free" | "premium";
+        userId: string;
+        email?: string;
+      }
+): SupabaseSession | null {
+  if (!state.authenticated) {
+    setAuthSessionForTests(null);
+    setViewerAccessOverrideForTests({
+      session: null
+    });
+    return null;
+  }
+
+  const session = createTestSession(state.userId, state.email);
+  setAuthSessionForTests(session);
+  setViewerAccessOverrideForTests({
+    session,
+    entitlement: {
+      userId: session.user.id,
+      plan: state.plan,
+      status: "active",
+      source: "test",
+      updatedAt: new Date().toISOString()
+    }
+  });
+
+  return session;
+}
+
+function setDefaultTestViewer(): SupabaseSession {
+  return setTestViewerAccess({
+    authenticated: true,
+    plan: "premium",
+    userId: "viewer-premium",
+    email: "premium@example.com"
+  }) as SupabaseSession;
+}
+
+async function captureErrorCode(action: () => Promise<unknown>): Promise<string | null> {
+  try {
+    await action();
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 // Measures end-to-end duration for higher-level engine calls.
 async function measure<T>(fn: () => Promise<T>): Promise<{ result: T; durationMs: number }> {
   const startedAt = Date.now();
@@ -115,6 +199,19 @@ function assertWallpapers(items: Wallpaper[], minimum = 1): boolean {
         isValidUrl(item.urls.full) &&
         isValidUrl(item.urls.original)
     )
+  );
+}
+
+function hasRemoteUsageChanged(
+  before: ReturnType<typeof getQuotaReport>,
+  after: ReturnType<typeof getQuotaReport>
+): boolean {
+  return (
+    before.unsplash.totalRequests !== after.unsplash.totalRequests ||
+    before.pexels.totalRequests !== after.pexels.totalRequests ||
+    before.pixabay.totalRequests !== after.pixabay.totalRequests ||
+    before.nasa.totalRequests !== after.nasa.totalRequests ||
+    before.picsum.totalRequests !== after.picsum.totalRequests
   );
 }
 
@@ -360,6 +457,13 @@ async function runRouterTests(): Promise<TestResult[]> {
     perPage: 5,
     mode: "search"
   });
+  const coldStartSpace = pickSource({
+    query: "nebula wallpaper",
+    category: "space",
+    page: 1,
+    perPage: 5,
+    mode: "search"
+  });
 
   recordUsage("unsplash", { success: true, latencyMs: 320 });
   recordUsage("pexels", { success: true, latencyMs: 90 });
@@ -398,6 +502,7 @@ async function runRouterTests(): Promise<TestResult[]> {
 
   const checks: Array<[string, boolean, string]> = [
     ["Cold-start priority routing", coldStartNature.source === "unsplash", coldStartNature.chain.join(" -> ")],
+    ["Cold-start space routing", coldStartSpace.source === "unsplash", coldStartSpace.chain.join(" -> ")],
     ["Nature fastest routing", nature.source === "pexels", `${nature.chain.join(" -> ")} | ${nature.reason}`],
     ["Space fastest routing", space.source === "pexels", `${space.chain.join(" -> ")} | ${space.reason}`],
     ["General routing", general.chain.length > 0, general.chain.join(" -> ")],
@@ -501,12 +606,153 @@ async function runAiRoutingTests(): Promise<TestResult[]> {
   }
 }
 
+// Verifies the approved product rules:
+// signed-out users cannot browse or generate,
+// signed-in free users can browse normal wallpapers,
+// and AI generation remains premium-only even when the AI cache is already warm.
+async function runAccessControlTests(): Promise<TestResult[]> {
+  line("[TEST 3D] Access Control");
+  cacheClear();
+  localBundleClear();
+  storageClear();
+
+  const browseQuery = "access control canyon";
+  const category = "nature";
+  const localSample = buildWallpaper({
+    source: "local",
+    sourceId: "access-control-browse",
+    urls: {
+      thumbnail: createSvgDataUrl("Access Browse", "#1e3a8a", "#0ea5e9"),
+      preview: createSvgDataUrl("Access Browse", "#1e3a8a", "#0ea5e9"),
+      full: createSvgDataUrl("Access Browse", "#1e3a8a", "#0ea5e9"),
+      original: createSvgDataUrl("Access Browse", "#1e3a8a", "#0ea5e9")
+    },
+    width: 1440,
+    height: 2560,
+    description: "Access control canyon wallpaper",
+    tags: ["access", "control", "canyon"],
+    photographerName: "Access Tests",
+    photographerUrl: "",
+    category,
+    query: browseQuery
+  });
+  const aiPrompt = "create a cinematic access control neon skyline poster with rim lighting 9:16 no text";
+  localBundleUpsert([localSample]);
+
+  setGenerateImageOverrideForTests(async (request) => ({
+    provider: request.provider ?? "openai",
+    model: request.model ?? "test-access-model",
+    prompt: request.prompt,
+    latencyMs: 5,
+    images: [
+      {
+        url: createSvgDataUrl("Access AI", "#111827", "#22c55e"),
+        width: 1024,
+        height: 1536,
+        revisedPrompt: request.prompt
+      }
+    ],
+    route: {
+      primary: request.provider ?? "openai",
+      chain: [request.provider ?? "openai"],
+      requestedProvider: request.provider ?? null,
+      attempted: [request.provider ?? "openai"],
+      skipped: [],
+      reason: "test access override"
+    },
+    quota: null,
+    persisted: false
+  }));
+
+  try {
+    setTestViewerAccess({
+      authenticated: false
+    });
+    const unauthenticatedSearchCode = await captureErrorCode(() => engine.search(browseQuery, category, 1));
+
+    setTestViewerAccess({
+      authenticated: true,
+      plan: "free",
+      userId: "viewer-free",
+      email: "free@example.com"
+    });
+    const freeSearch = await engine.search(browseQuery, category, 1);
+
+    setDefaultTestViewer();
+    const premiumGenerated = await engine.generate(aiPrompt, {
+      provider: "openai",
+      perPage: 1,
+      persist: false
+    });
+
+    setTestViewerAccess({
+      authenticated: false
+    });
+    const unauthenticatedAiCode = await captureErrorCode(() =>
+      engine.generate(aiPrompt, {
+        provider: "openai",
+        perPage: 1,
+        persist: false
+      })
+    );
+
+    setTestViewerAccess({
+      authenticated: true,
+      plan: "free",
+      userId: "viewer-free",
+      email: "free@example.com"
+    });
+    const freeAiCode = await captureErrorCode(() =>
+      engine.generate(aiPrompt, {
+        provider: "openai",
+        perPage: 1,
+        persist: false
+      })
+    );
+    const freeAutoAiCode = await captureErrorCode(() =>
+      engine.getImages(aiPrompt, {
+        intent: "auto",
+        provider: "openai",
+        perPage: 1,
+        persist: false
+      })
+    );
+
+    return [
+      unauthenticatedSearchCode === "authentication_required"
+        ? pass("Signed-out browse blocked", unauthenticatedSearchCode)
+        : fail("Signed-out browse blocked", String(unauthenticatedSearchCode)),
+      assertWallpapers(freeSearch, 1) && freeSearch[0]?.id === localSample.id && freeSearch[0]?.source === "local"
+        ? pass("Free browse allowed", `${freeSearch[0]?.source} :: ${freeSearch[0]?.id}`)
+        : fail("Free browse allowed", `${freeSearch[0]?.source ?? "missing"} :: ${freeSearch[0]?.id ?? "missing"}`),
+      assertWallpapers(premiumGenerated, 1) && premiumGenerated[0]?.source === "ai"
+        ? pass("Premium AI allowed", premiumGenerated[0]?.source ?? "missing")
+        : fail("Premium AI allowed", premiumGenerated[0]?.source ?? "missing"),
+      unauthenticatedAiCode === "authentication_required"
+        ? pass("Signed-out AI blocked", unauthenticatedAiCode)
+        : fail("Signed-out AI blocked", String(unauthenticatedAiCode)),
+      freeAiCode === "subscription_required"
+        ? pass("Free AI blocked", freeAiCode)
+        : fail("Free AI blocked", String(freeAiCode)),
+      freeAutoAiCode === "subscription_required"
+        ? pass("Free auto AI blocked", freeAutoAiCode)
+        : fail("Free auto AI blocked", String(freeAutoAiCode))
+    ];
+  } finally {
+    setGenerateImageOverrideForTests(null);
+    setDefaultTestViewer();
+    cacheClear();
+    localBundleClear();
+  }
+}
+
 // Verifies the real wrapper request shape stays compatible with OpenAI's image API.
 // This uses a mocked fetch so we can inspect the outgoing body without making a live billable request.
 async function runAiWrapperRequestShapeTests(): Promise<TestResult[]> {
   line("[TEST 3B] AI Wrapper Request");
 
   const originalFetch = globalThis.fetch;
+  const originalOpenAiSettings = { ...AI_PROVIDER_SETTINGS.openai };
   const capturedCalls: Array<{
     url: string;
     body: Record<string, unknown> | null;
@@ -548,10 +794,21 @@ async function runAiWrapperRequestShapeTests(): Promise<TestResult[]> {
   }) as typeof globalThis.fetch;
 
   try {
+    Object.assign(AI_PROVIDER_SETTINGS.openai, {
+      ...AI_PROVIDER_SETTINGS.openai,
+      enabled: true,
+      apiKey: "test-openai-key",
+      apiUrl: "https://api.openai.com/v1/images/generations",
+      defaultModel: "dall-e-3",
+      defaultQuality: "hd"
+    });
+
     const generated = await engine.generate("minimal mountain wallpaper", {
+      provider: "openai",
       size: "1024x1536",
       quality: "high",
-      style: "vivid"
+      style: "vivid",
+      perPage: 3
     });
     const openAiRequest = capturedCalls.find((call) => {
       const body = call.body;
@@ -569,6 +826,21 @@ async function runAiWrapperRequestShapeTests(): Promise<TestResult[]> {
     const promptText = typeof bodyPrompt === "string" ? bodyPrompt : "";
 
     const checks: Array<[string, boolean, string]> = [
+      [
+        "Pinned OpenAI request",
+        requestBody?.["model"] === "dall-e-3",
+        JSON.stringify(requestBody ?? {})
+      ],
+      [
+        "DALL-E 3 quality normalized",
+        requestBody?.["quality"] === "hd",
+        JSON.stringify(requestBody ?? {})
+      ],
+      [
+        "DALL-E 3 caps image count",
+        requestBody?.["n"] === 1,
+        JSON.stringify(requestBody ?? {})
+      ],
       [
         "No unsupported style field",
         bodyStyle === undefined,
@@ -588,13 +860,141 @@ async function runAiWrapperRequestShapeTests(): Promise<TestResult[]> {
 
     return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
   } finally {
+    Object.assign(AI_PROVIDER_SETTINGS.openai, originalOpenAiSettings);
     globalThis.fetch = originalFetch;
+  }
+}
+
+async function runAiProviderSelectionTests(): Promise<TestResult[]> {
+  line("[TEST 3C] AI Provider Selection");
+  cacheClear();
+
+  const originalSiliconFlowSettings = { ...AI_PROVIDER_SETTINGS.silicon_flow };
+  const originalOpenAiSettings = { ...AI_PROVIDER_SETTINGS.openai };
+  const originalNanoBananaSettings = { ...AI_PROVIDER_SETTINGS.nano_banana };
+  let siliconFlowCalls = 0;
+  let openAiCalls = 0;
+  let nanoBananaCalls = 0;
+
+  Object.assign(AI_PROVIDER_SETTINGS.silicon_flow, {
+    ...AI_PROVIDER_SETTINGS.silicon_flow,
+    enabled: true,
+    apiKey: "test-silicon-flow-key",
+    apiUrl: "https://api.siliconflow.com/v1/images/generations"
+  });
+  Object.assign(AI_PROVIDER_SETTINGS.openai, {
+    ...AI_PROVIDER_SETTINGS.openai,
+    enabled: true,
+    apiKey: "test-openai-key",
+    apiUrl: "https://api.openai.com/v1/images/generations"
+  });
+  Object.assign(AI_PROVIDER_SETTINGS.nano_banana, {
+    ...AI_PROVIDER_SETTINGS.nano_banana,
+    enabled: true,
+    apiKey: "test-gemini-key",
+    apiUrl: "https://generativelanguage.googleapis.com/v1beta/models"
+  });
+
+  setAiProviderOverrideForTests("silicon_flow", async (context) => {
+    siliconFlowCalls += 1;
+    return {
+      provider: "silicon_flow",
+      model: context.resolvedModel,
+      prompt: context.request.prompt,
+      latencyMs: 5,
+      images: [
+        {
+          url: createSvgDataUrl("SiliconFlow", "#0f172a", "#0ea5e9"),
+          width: 720,
+          height: 1280
+        }
+      ],
+      rateLimit: null
+    };
+  });
+  setAiProviderOverrideForTests("openai", async () => {
+    openAiCalls += 1;
+    throw new Error("OpenAI should not be called for a pinned SiliconFlow request.");
+  });
+  setAiProviderOverrideForTests("nano_banana", async () => {
+    nanoBananaCalls += 1;
+    throw new Error("Nano Banana should not be called for a pinned SiliconFlow request.");
+  });
+
+  try {
+    const plan = getAiProviderPlan({
+      prompt: "cinematic aurora skyline",
+      category: "space",
+      provider: "silicon_flow"
+    });
+    const generated = await engine.generate("cinematic aurora skyline", {
+      provider: "silicon_flow",
+      size: "928x1664"
+    });
+
+    const checks: Array<[string, boolean, string]> = [
+      [
+        "Explicit provider plan stays pinned",
+        plan.primary === "silicon_flow" && plan.chain.length === 1 && plan.chain[0] === "silicon_flow",
+        JSON.stringify(plan)
+      ],
+      [
+        "Pinned provider avoids fallback providers",
+        siliconFlowCalls === 1 && openAiCalls === 0 && nanoBananaCalls === 0,
+        `silicon=${siliconFlowCalls}, openai=${openAiCalls}, nano=${nanoBananaCalls}`
+      ],
+      [
+        "Pinned provider still returns wallpaper",
+        assertWallpapers(generated, 1) && generated[0]?.source === "ai",
+        generated[0]?.source ?? "missing"
+      ]
+    ];
+
+    return checks.map(([name, ok, detail]) => (ok ? pass(name, detail) : fail(name, detail)));
+  } finally {
+    setAiProviderOverrideForTests("silicon_flow", null);
+    setAiProviderOverrideForTests("openai", null);
+    setAiProviderOverrideForTests("nano_banana", null);
+    Object.assign(AI_PROVIDER_SETTINGS.silicon_flow, originalSiliconFlowSettings);
+    Object.assign(AI_PROVIDER_SETTINGS.openai, originalOpenAiSettings);
+    Object.assign(AI_PROVIDER_SETTINGS.nano_banana, originalNanoBananaSettings);
+    cacheClear();
   }
 }
 
 // Proves the cache can write and immediately serve the same request back.
 async function runCacheTests(): Promise<TestResult[]> {
   line("[TEST 4] Cache");
+  cacheClear();
+  localBundleClear();
+
+  const desertOnlyWallpaper = buildWallpaper({
+    source: "local",
+    sourceId: "cache-desert-seed",
+    urls: {
+      thumbnail: createSvgDataUrl("Desert Seed", "#7c2d12", "#f59e0b"),
+      preview: createSvgDataUrl("Desert Seed", "#7c2d12", "#f59e0b"),
+      full: createSvgDataUrl("Desert Seed", "#7c2d12", "#f59e0b"),
+      original: createSvgDataUrl("Desert Seed", "#7c2d12", "#f59e0b")
+    },
+    width: 1440,
+    height: 2560,
+    description: "Endless desert dunes under a clear sky",
+    tags: ["desert", "sand", "dunes"],
+    photographerName: "Cache Test",
+    photographerUrl: "",
+    category: "nature",
+    query: "desert"
+  });
+  localBundleUpsert([desertOnlyWallpaper]);
+  cacheClear();
+  cacheResetMemory();
+  const irrelevantLocalResults = localBundleSearch("mountains", "nature", 1, 15);
+  const irrelevantQuotaBefore = getQuotaReport();
+  const remoteMountainResults = await engine.search("mountains", "nature", 1);
+  const irrelevantQuotaAfter = getQuotaReport();
+  const usedRemoteForIrrelevant = hasRemoteUsageChanged(irrelevantQuotaBefore, irrelevantQuotaAfter);
+
   cacheClear();
   localBundleClear();
 
@@ -621,14 +1021,15 @@ async function runCacheTests(): Promise<TestResult[]> {
   const localBundleResults = localBundleSearch("mountains", "nature", 1, 15);
   const localServed = await engine.search("mountains", "nature", 1);
   const quotaAfter = getQuotaReport();
-  const usedRemoteApis =
-    quotaAfter.unsplash.totalRequests !== quotaBefore.unsplash.totalRequests ||
-    quotaAfter.pexels.totalRequests !== quotaBefore.pexels.totalRequests ||
-    quotaAfter.pixabay.totalRequests !== quotaBefore.pixabay.totalRequests ||
-    quotaAfter.nasa.totalRequests !== quotaBefore.nasa.totalRequests ||
-    quotaAfter.picsum.totalRequests !== quotaBefore.picsum.totalRequests;
+  const usedRemoteApis = hasRemoteUsageChanged(quotaBefore, quotaAfter);
 
   return [
+    irrelevantLocalResults.length === 0
+      ? pass("Local bundle relevance", "irrelevant category results are not reused")
+      : fail("Local bundle relevance", JSON.stringify(irrelevantLocalResults.slice(0, 3).map((item) => item.id))),
+    remoteMountainResults.length > 0 && usedRemoteForIrrelevant
+      ? pass("Irrelevant local bundle bypass", "new query fell back to remote search")
+      : fail("Irrelevant local bundle bypass", `remote usage changed=${usedRemoteForIrrelevant}`),
     sample.length > 0 ? pass("Cache write", `${sample.length} items stored`) : fail("Cache write", "no items to store"),
     readFresh ? pass("Cache read", `${readFresh.state} hit`) : fail("Cache read", "cache miss"),
     readAgain ? pass("Cache repeat read", `${readAgain.state} hit`) : fail("Cache repeat read", "cache miss"),
@@ -806,6 +1207,14 @@ async function runPipelineTests(): Promise<TestResult[]> {
   const trending = await measure(() => engine.getTrending());
   const daily = await measure(() => engine.getDaily());
   const warmed = await measure(() => engine.warmCache(["nature", "space"]));
+  cacheClear();
+  localBundleClear();
+  await engine.search("nebula", "space", 1);
+  cacheClear();
+  const dailyQuotaBefore = getQuotaReport();
+  const dailyAfterLocalSeed = await measure(() => engine.getDaily());
+  const dailyQuotaAfter = getQuotaReport();
+  const usedRemoteForDaily = hasRemoteUsageChanged(dailyQuotaBefore, dailyQuotaAfter);
 
   return [
     assertWallpapers(first.result, 1)
@@ -826,6 +1235,9 @@ async function runPipelineTests(): Promise<TestResult[]> {
     daily.result?.id
       ? pass("Daily", `${daily.result.source} daily wallpaper, ${daily.durationMs}ms`)
       : fail("Daily", "daily wallpaper missing"),
+    dailyAfterLocalSeed.result?.id && usedRemoteForDaily
+      ? pass("Daily bypasses local bundle", `${dailyAfterLocalSeed.result.source}, ${dailyAfterLocalSeed.durationMs}ms`)
+      : fail("Daily bypasses local bundle", `remote usage changed=${usedRemoteForDaily}`),
     Object.values(warmed.result).every((count) => count > 0)
       ? pass("Warm cache", `${JSON.stringify(warmed.result)}, ${warmed.durationMs}ms`)
       : fail("Warm cache", JSON.stringify(warmed.result))
@@ -885,6 +1297,7 @@ async function main(): Promise<void> {
   line("===============================================");
   line("WALLPAPER ENGINE BACKEND TEST RUNNER");
   line("===============================================");
+  setDefaultTestViewer();
 
   const groups = [];
   groups.push(await runApiClientTests());
@@ -892,6 +1305,8 @@ async function main(): Promise<void> {
   groups.push(await runRouterTests()); 
   groups.push(await runAiRoutingTests());
   groups.push(await runAiWrapperRequestShapeTests());
+  groups.push(await runAiProviderSelectionTests());
+  groups.push(await runAccessControlTests());
   groups.push(await runCacheTests());
   groups.push(await runStorageTests());
   groups.push(await runUtilityTests());

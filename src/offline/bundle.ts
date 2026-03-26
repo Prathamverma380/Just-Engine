@@ -39,6 +39,23 @@ const OFFLINE_BUNDLE_SEEDS: readonly OfflineBundleSeed[] = [
 ] as const;
 
 let cachedBundle: Wallpaper[] | null = null;
+const SEARCH_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "day",
+  "for",
+  "image",
+  "in",
+  "of",
+  "on",
+  "photo",
+  "picture",
+  "the",
+  "to",
+  "wallpaper",
+  "with"
+]);
 
 function cloneWallpaper(wallpaper: Wallpaper): Wallpaper {
   return {
@@ -61,6 +78,17 @@ function getBundleSearchText(wallpaper: Wallpaper): string {
   ]
     .join(" ")
     .toLowerCase();
+}
+
+function tokenizeSearchQuery(query: string): string[] {
+  const rawTokens = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  const meaningfulTokens = rawTokens.filter((token) => token.length > 2 && !SEARCH_STOP_WORDS.has(token));
+
+  return meaningfulTokens.length > 0 ? meaningfulTokens : rawTokens;
 }
 
 export function getBundledOfflineWallpapers(): Wallpaper[] {
@@ -98,11 +126,7 @@ export function searchBundledOfflineWallpapers(
   request: Pick<ApiClientRequest, "query" | "category" | "page" | "perPage">
 ): Wallpaper[] {
   const normalizedCategory = request.category.trim().toLowerCase() || "all";
-  const tokens = request.query
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
+  const tokens = tokenizeSearchQuery(request.query);
   const candidates = getBundledOfflineWallpapers().filter((wallpaper) =>
     normalizedCategory === "all" ? true : wallpaper.category.toLowerCase() === normalizedCategory
   );
@@ -121,7 +145,7 @@ export function searchBundledOfflineWallpapers(
         return true;
       }
 
-      return entry.score > 0 || normalizedCategory !== "all";
+      return entry.score > 0;
     })
     .sort((left, right) => right.score - left.score || right.wallpaper.cachedAt - left.wallpaper.cachedAt);
 

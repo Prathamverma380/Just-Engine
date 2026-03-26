@@ -1,3 +1,4 @@
+import { requirePremiumViewer } from "../access";
 import { FEATURE_FLAGS } from "../config";
 import { AI_PROVIDER_SETTINGS, AI_SETTINGS, AI_STORAGE_SETTINGS } from "./config";
 import { getAiProvider, setAiProviderOverrideForTests } from "./providers";
@@ -60,19 +61,25 @@ export function setGenerateImageOverrideForTests(override: GenerationOverride | 
 export { setAiProviderOverrideForTests };
 
 export async function generateImage(request: AiGenerationRequest): Promise<AiGenerationResponse> {
-  // Tests can replace the whole generation pipeline with a deterministic fake.
-  if (generationOverrideForTests) {
-    return generationOverrideForTests(request);
-  }
+  const viewer = await requirePremiumViewer();
+  const effectiveRequest: AiGenerationRequest = {
+    ...request,
+    userId: viewer.user.id
+  };
 
   // Hard gate so hosts can disable AI generation globally without changing callers.
   if (!FEATURE_FLAGS.enableAiGeneration) {
     throw new Error("AI image generation is disabled by feature flag.");
   }
 
+  // Tests can replace the whole generation pipeline with a deterministic fake.
+  if (generationOverrideForTests) {
+    return generationOverrideForTests(effectiveRequest);
+  }
+
   const startedAt = Date.now();
   // Build the deterministic fallback plan before any live provider call is attempted.
-  const initialRoute = getAiProviderPlan(request);
+  const initialRoute = getAiProviderPlan(effectiveRequest);
   if (initialRoute.chain.length === 0) {
     const skipped = initialRoute.skipped.map((item) => `${item.provider}: ${item.reason}`).join(", ");
     throw new Error(skipped ? `AI generation unavailable. ${skipped}` : "AI generation unavailable.");
@@ -84,7 +91,7 @@ export async function generateImage(request: AiGenerationRequest): Promise<AiGen
   for (const provider of initialRoute.chain) {
     // As we move through fallbacks, the route is updated so the final response can explain the path taken.
     route = markAiAttempt(route, provider);
-    const context = resolveProviderContext(provider, request, initialRoute.primary);
+    const context = resolveProviderContext(provider, effectiveRequest, initialRoute.primary);
 
     try {
       // Execute the provider-specific adapter with fully resolved settings.
@@ -98,7 +105,7 @@ export async function generateImage(request: AiGenerationRequest): Promise<AiGen
       const response: AiGenerationResponse = {
         provider: result.provider,
         model: result.model,
-        prompt: request.prompt,
+        prompt: effectiveRequest.prompt,
         latencyMs: Date.now() - startedAt,
         images: result.images.slice(0, context.resolvedCount),
         route,
@@ -112,10 +119,10 @@ export async function generateImage(request: AiGenerationRequest): Promise<AiGen
           const persisted = await persistAiGeneration({
             provider: response.provider,
             model: response.model,
-            prompt: request.prompt,
-            category: request.category,
-            ...(request.userId ? { userId: request.userId } : {}),
-            request,
+            prompt: effectiveRequest.prompt,
+            category: effectiveRequest.category,
+            ...(effectiveRequest.userId ? { userId: effectiveRequest.userId } : {}),
+            request: effectiveRequest,
             response
           });
           response.persisted = persisted.persisted;

@@ -110,7 +110,7 @@ function readFirstValue(env: Record<string, string | undefined>, keys: string[])
 
 // Guard for provider names coming from env configuration.
 function isAiProviderName(value: string): value is AiProviderName {
-  return value === "openai" || value === "nano_banana" || value === "eleven_labs";
+  return value === "openai" || value === "nano_banana" || value === "silicon_flow";
 }
 
 // Parses the preferred primary provider from env.
@@ -119,7 +119,7 @@ function readProvider(value: string | undefined, fallback: AiProviderName): AiPr
   return normalized && isAiProviderName(normalized) ? normalized : fallback;
 }
 
-// Parses a comma-separated fallback chain like `openai,nano_banana,eleven_labs`.
+// Parses a comma-separated fallback chain like `openai,nano_banana,silicon_flow`.
 // Duplicates are removed later so the chain stays deterministic and clean.
 function readProviderList(
   value: string | undefined,
@@ -138,7 +138,7 @@ function readProviderList(
 }
 
 // Builds one provider config object from a set of env keys plus repo defaults.
-// This keeps OpenAI, Nano Banana, and ElevenLabs definitions uniform.
+// This keeps OpenAI, Nano Banana, and SiliconFlow definitions uniform.
 function buildProviderSettings(
   env: Record<string, string | undefined>,
   input: {
@@ -195,8 +195,8 @@ function buildQuotaLimits(
 // Runtime env wins over `.env.local`, but both feed the same normalized config.
 const fileEnv = readDotEnvFile();
 const env = typeof process === "undefined" ? fileEnv : { ...fileEnv, ...(process.env ?? {}) };
-const fallbackChain = readProviderList(env.AI_IMAGE_PROVIDER_CHAIN, ["openai", "nano_banana", "eleven_labs"]);
-const defaultProvider = readProvider(env.AI_IMAGE_PRIMARY_PROVIDER, fallbackChain[0] ?? "openai");
+const fallbackChain = readProviderList(env.AI_IMAGE_PROVIDER_CHAIN, ["silicon_flow", "openai", "nano_banana"]);
+const defaultProvider = readProvider(env.AI_IMAGE_PRIMARY_PROVIDER, fallbackChain[0] ?? "silicon_flow");
 
 // Provider-by-provider API settings.
 // Adapters read from this map instead of touching env parsing directly.
@@ -211,9 +211,9 @@ export const AI_PROVIDER_SETTINGS: Record<AiProviderName, AiProviderSettings> = 
     styleKeys: ["OPENAI_IMAGE_STYLE", "AI_IMAGE_STYLE"],
     timeoutKeys: ["OPENAI_IMAGE_TIMEOUT_MS", "AI_IMAGE_TIMEOUT_MS"],
     fallbackApiUrl: "https://api.openai.com/v1/images/generations",
-    fallbackModel: "gpt-image-1",
+    fallbackModel: "dall-e-3",
     fallbackSize: "1024x1536",
-    fallbackQuality: "high",
+    fallbackQuality: "hd",
     fallbackStyle: "vivid"
   }),
   nano_banana: buildProviderSettings(env, {
@@ -231,19 +231,19 @@ export const AI_PROVIDER_SETTINGS: Record<AiProviderName, AiProviderSettings> = 
     fallbackQuality: "high",
     fallbackStyle: ""
   }),
-  eleven_labs: buildProviderSettings(env, {
-    enabledKeys: ["ELEVENLABS_IMAGE_ENABLED", "ELEVEN_LABS_IMAGE_ENABLED"],
-    apiKeyKeys: ["ELEVENLABS_API_KEY", "ELEVEN_LABS_API_KEY"],
-    apiUrlKeys: ["ELEVENLABS_IMAGE_API_URL", "ELEVEN_LABS_IMAGE_API_URL"],
-    modelKeys: ["ELEVENLABS_IMAGE_MODEL", "ELEVEN_LABS_IMAGE_MODEL"],
-    sizeKeys: ["ELEVENLABS_IMAGE_SIZE", "ELEVEN_LABS_IMAGE_SIZE", "AI_IMAGE_SIZE"],
-    qualityKeys: ["ELEVENLABS_IMAGE_QUALITY", "ELEVEN_LABS_IMAGE_QUALITY", "AI_IMAGE_QUALITY"],
-    styleKeys: ["ELEVENLABS_IMAGE_STYLE", "ELEVEN_LABS_IMAGE_STYLE", "AI_IMAGE_STYLE"],
-    timeoutKeys: ["ELEVENLABS_IMAGE_TIMEOUT_MS", "ELEVEN_LABS_IMAGE_TIMEOUT_MS", "AI_IMAGE_TIMEOUT_MS"],
-    fallbackApiUrl: "",
-    fallbackModel: "flux-pro",
-    fallbackSize: "1024x1536",
-    fallbackQuality: "high",
+  silicon_flow: buildProviderSettings(env, {
+    enabledKeys: ["SILICONFLOW_IMAGE_ENABLED", "SILICON_FLOW_IMAGE_ENABLED"],
+    apiKeyKeys: ["SILICONFLOW_API_KEY", "SILICON_FLOW_API_KEY"],
+    apiUrlKeys: ["SILICONFLOW_IMAGE_API_URL", "SILICON_FLOW_IMAGE_API_URL"],
+    modelKeys: ["SILICONFLOW_IMAGE_MODEL", "SILICON_FLOW_IMAGE_MODEL"],
+    sizeKeys: ["SILICONFLOW_IMAGE_SIZE", "SILICON_FLOW_IMAGE_SIZE", "AI_IMAGE_SIZE"],
+    qualityKeys: ["SILICONFLOW_IMAGE_QUALITY", "SILICON_FLOW_IMAGE_QUALITY", "AI_IMAGE_QUALITY"],
+    styleKeys: ["SILICONFLOW_IMAGE_STYLE", "SILICON_FLOW_IMAGE_STYLE", "AI_IMAGE_STYLE"],
+    timeoutKeys: ["SILICONFLOW_IMAGE_TIMEOUT_MS", "SILICON_FLOW_IMAGE_TIMEOUT_MS", "AI_IMAGE_TIMEOUT_MS"],
+    fallbackApiUrl: "https://api.siliconflow.com/v1/images/generations",
+    fallbackModel: "Qwen/Qwen-Image",
+    fallbackSize: "928x1664",
+    fallbackQuality: "",
     fallbackStyle: ""
   })
 };
@@ -266,7 +266,7 @@ export const AI_SETTINGS = {
 export const AI_PROVIDER_LIMITS: Record<AiProviderName, AiQuotaLimits> = {
   openai: buildQuotaLimits(env, "OPENAI_IMAGE", true, 0.1),
   nano_banana: buildQuotaLimits(env, "NANO_BANANA", true, 0.1),
-  eleven_labs: buildQuotaLimits(env, "ELEVENLABS_IMAGE", true, 0.1)
+  silicon_flow: buildQuotaLimits(env, "SILICONFLOW_IMAGE", true, 0.1)
 };
 
 // Supabase persistence settings for generated content.

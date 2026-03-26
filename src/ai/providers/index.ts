@@ -5,9 +5,9 @@ import type {
   AiProviderOverride,
   AiProviderRequestContext
 } from "../types";
-import { elevenLabsProvider } from "./eleven_labs";
 import { nanoBananaProvider } from "./nano_banana";
 import { openAiProvider } from "./openai";
+import { siliconFlowProvider } from "./silicon_flow";
 
 // Provider registry.
 // This file is the single lookup table for all AI adapters inside `src/ai/providers`.
@@ -19,7 +19,7 @@ const providerOverridesForTests: Partial<Record<AiProviderName, AiProviderOverri
 const baseProviders: Record<AiProviderName, AiProviderAdapter> = {
   openai: openAiProvider,
   nano_banana: nanoBananaProvider,
-  eleven_labs: elevenLabsProvider
+  silicon_flow: siliconFlowProvider
 };
 
 // Wraps a provider so tests can intercept only its `generate()` call while leaving
@@ -42,7 +42,7 @@ function withOverride(provider: AiProviderAdapter): AiProviderAdapter {
 export const aiProviders: Record<AiProviderName, AiProviderAdapter> = {
   openai: withOverride(baseProviders.openai),
   nano_banana: withOverride(baseProviders.nano_banana),
-  eleven_labs: withOverride(baseProviders.eleven_labs)
+  silicon_flow: withOverride(baseProviders.silicon_flow)
 };
 
 // Returns one provider adapter by name.
@@ -58,4 +58,4 @@ export function setAiProviderOverrideForTests(
   providerOverridesForTests[provider] = override;
 }
 
-export { openAiProvider, nanoBananaProvider, elevenLabsProvider };
+export { openAiProvider, nanoBananaProvider, siliconFlowProvider };

@@ -9,6 +9,7 @@ export * from "./router";
 export * from "./persistence";
 export * from "./storage";
 export * from "./auth";
+export * from "./access";
 export * from "./ai";
 export * from "./watermark";
 export * from "./engine";

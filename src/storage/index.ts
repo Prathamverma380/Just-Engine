@@ -1,5 +1,7 @@
 // This file is the user-state side of persistence.
 // It stores what the user cares about, not what the providers returned.
+import { getCachedViewerEntitlement, isPremiumEntitlement } from "../access";
+import { getAuthSession } from "../auth";
 import { getDatabase, safeJsonParse } from "../persistence";
 import type { Wallpaper } from "../types/wallpaper";
 
@@ -9,6 +11,37 @@ type SubscriptionState = "free" | "premium";
 // Centralized timestamp helper so writes are consistent and easy to change later.
 function getNow(): number {
   return Date.now();
+}
+
+function getCurrentUserId(): string | null {
+  return getAuthSession()?.user.id ?? null;
+}
+
+function scopeValue(value: string, userId: string): string {
+  return `${userId}::${value}`;
+}
+
+function getScopedValue(value: string): string | null {
+  const userId = getCurrentUserId();
+  return userId ? scopeValue(value, userId) : null;
+}
+
+function stripScopePrefix(value: string, userId: string): string {
+  const prefix = `${userId}::`;
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
+function canReadStoredWallpaper(wallpaper: Wallpaper): boolean {
+  if (wallpaper.source !== "ai") {
+    return true;
+  }
+
+  return isPremiumEntitlement(getCachedViewerEntitlement());
+}
+
+function getScopedAppStateKey(key: string): string {
+  const userId = getCurrentUserId();
+  return userId ? scopeValue(key, userId) : key;
 }
 
 // Reads a small app-level setting from persistent state.
@@ -50,7 +83,8 @@ function writeAppState(key: string, value: unknown): void {
 // Favorites are stored as full wallpaper objects so the UI can render them without rebuilding anything.
 export function saveFavorite(wallpaper: Wallpaper): void {
   const db = getDatabase();
-  if (!db) {
+  const scopedId = getScopedValue(wallpaper.id);
+  if (!db || !scopedId) {
     return;
   }
 
@@ -64,51 +98,69 @@ export function saveFavorite(wallpaper: Wallpaper): void {
     ON CONFLICT(id) DO UPDATE SET
       payload = excluded.payload,
       updated_at = excluded.updated_at
-  `).run(wallpaper.id, payload, getNow());
+  `).run(scopedId, payload, getNow());
 }
 
 // Removing a favorite should be silent and idempotent.
 export function removeFavorite(id: string): void {
   const db = getDatabase();
-  db?.prepare("DELETE FROM favorites WHERE id = ?").run(id);
+  const scopedId = getScopedValue(id);
+  if (!scopedId) {
+    return;
+  }
+
+  db?.prepare("DELETE FROM favorites WHERE id = ?").run(scopedId);
 }
 
 // Favorites come back as fully serialized wallpaper objects.
 // Reading favorites means deserializing the full saved wallpapers back out of SQLite.
 export function getFavorites(): Wallpaper[] {
   const db = getDatabase();
-  if (!db) {
+  const userId = getCurrentUserId();
+  if (!db || !userId) {
     return [];
   }
 
-  const rows = db.prepare("SELECT payload FROM favorites ORDER BY updated_at DESC").all() as Array<{
+  const rows = db.prepare("SELECT payload FROM favorites WHERE id LIKE ? ORDER BY updated_at DESC").all(
+    `${scopeValue("", userId)}%`
+  ) as Array<{
     payload: string;
   }>;
 
-  return rows.map((row) => safeJsonParse<Wallpaper>(row.payload, {} as Wallpaper)).filter((item) => Boolean(item.id));
+  return rows
+    .map((row) => safeJsonParse<Wallpaper>(row.payload, {} as Wallpaper))
+    .filter((item) => Boolean(item.id))
+    .filter(canReadStoredWallpaper);
 }
 
 // Fast existence check used while decorating engine results.
 export function isFavorite(id: string): boolean {
   const db = getDatabase();
-  if (!db) {
+  const scopedId = getScopedValue(id);
+  if (!db || !scopedId) {
     return false;
   }
 
-  const row = db.prepare("SELECT 1 AS found FROM favorites WHERE id = ? LIMIT 1").get(id) as
+  const favoriteRow = db.prepare("SELECT payload FROM favorites WHERE id = ? LIMIT 1").get(scopedId) as
     | {
-        found: number;
+        payload: string;
       }
     | undefined;
 
-  return Boolean(row?.found);
+  if (!favoriteRow?.payload) {
+    return false;
+  }
+
+  const wallpaper = safeJsonParse<Wallpaper | null>(favoriteRow.payload, null);
+  return Boolean(wallpaper?.id && canReadStoredWallpaper(wallpaper));
 }
 
 // Preferences are generic on purpose because settings will grow over time.
 // Preferences are JSON so we can store strings, booleans, arrays, or future small objects.
 export function savePreference(key: string, value: unknown): void {
   const db = getDatabase();
-  if (!db) {
+  const scopedKey = getScopedValue(key);
+  if (!db || !scopedKey) {
     return;
   }
 
@@ -118,17 +170,18 @@ export function savePreference(key: string, value: unknown): void {
     ON CONFLICT(key) DO UPDATE SET
       value = excluded.value,
       updated_at = excluded.updated_at
-  `).run(key, JSON.stringify(value), getNow());
+  `).run(scopedKey, JSON.stringify(value), getNow());
 }
 
 // Generic getter keeps storage flexible without forcing a rigid settings schema too early.
 export function getPreference<T>(key: string): T | undefined {
   const db = getDatabase();
-  if (!db) {
+  const scopedKey = getScopedValue(key);
+  if (!db || !scopedKey) {
     return undefined;
   }
 
-  const row = db.prepare("SELECT value FROM preferences WHERE key = ?").get(key) as
+  const row = db.prepare("SELECT value FROM preferences WHERE key = ?").get(scopedKey) as
     | {
         value: string;
       }
@@ -140,22 +193,29 @@ export function getPreference<T>(key: string): T | undefined {
 // Download history is tracked separately from favorites because those user intents are different.
 export function getDownloadHistory(): Wallpaper[] {
   const db = getDatabase();
-  if (!db) {
+  const userId = getCurrentUserId();
+  if (!db || !userId) {
     return [];
   }
 
-  const rows = db.prepare("SELECT payload FROM download_history ORDER BY downloaded_at DESC").all() as Array<{
+  const rows = db.prepare("SELECT payload FROM download_history WHERE id LIKE ? ORDER BY downloaded_at DESC").all(
+    `${scopeValue("", userId)}%`
+  ) as Array<{
     payload: string;
   }>;
 
-  return rows.map((row) => safeJsonParse<Wallpaper>(row.payload, {} as Wallpaper)).filter((item) => Boolean(item.id));
+  return rows
+    .map((row) => safeJsonParse<Wallpaper>(row.payload, {} as Wallpaper))
+    .filter((item) => Boolean(item.id))
+    .filter(canReadStoredWallpaper);
 }
 
 // We stamp the download time here so callers do not need to remember to do it.
 // Download history keeps the decorated wallpaper object, including download time.
 export function addToDownloadHistory(wallpaper: Wallpaper): void {
   const db = getDatabase();
-  if (!db) {
+  const scopedId = getScopedValue(wallpaper.id);
+  if (!db || !scopedId) {
     return;
   }
 
@@ -171,61 +231,70 @@ export function addToDownloadHistory(wallpaper: Wallpaper): void {
     ON CONFLICT(id) DO UPDATE SET
       payload = excluded.payload,
       downloaded_at = excluded.downloaded_at
-  `).run(wallpaper.id, payload, downloadedAt);
+  `).run(scopedId, payload, downloadedAt);
 }
 
 // Search history helps build future UI features like recent searches and smarter suggestions.
 // We keep search history deduped and capped so it stays useful instead of noisy.
 export function addSearchHistory(query: string): void {
   const db = getDatabase();
+  const userId = getCurrentUserId();
   const normalized = query.trim();
-  if (!db || !normalized) {
+  if (!db || !normalized || !userId) {
     return;
   }
 
+  const scopedQuery = scopeValue(normalized, userId);
+  const scopedPrefix = `${scopeValue("", userId)}%`;
   const now = getNow();
-  db.prepare("DELETE FROM search_history WHERE query = ?").run(normalized);
-  db.prepare("INSERT INTO search_history (query, created_at) VALUES (?, ?)").run(normalized, now);
+  db.prepare("DELETE FROM search_history WHERE query = ?").run(scopedQuery);
+  db.prepare("INSERT INTO search_history (query, created_at) VALUES (?, ?)").run(scopedQuery, now);
   db.prepare(`
     DELETE FROM search_history
-    WHERE id NOT IN (
+    WHERE query LIKE ?
+      AND id NOT IN (
       SELECT id
       FROM search_history
+      WHERE query LIKE ?
       ORDER BY created_at DESC
       LIMIT 25
     )
-  `).run();
+  `).run(scopedPrefix, scopedPrefix);
 }
 
 // Returns a safe copy so outside code cannot mutate internal state accidentally.
 export function getSearchHistory(): string[] {
   const db = getDatabase();
-  if (!db) {
+  const userId = getCurrentUserId();
+  if (!db || !userId) {
     return [];
   }
 
-  const rows = db.prepare("SELECT query FROM search_history ORDER BY created_at DESC").all() as Array<{
+  const rows = db.prepare("SELECT query FROM search_history WHERE query LIKE ? ORDER BY created_at DESC").all(
+    `${scopeValue("", userId)}%`
+  ) as Array<{
     query: string;
   }>;
 
-  return rows.map((row) => row.query);
+  return rows.map((row) => stripScopePrefix(row.query, userId));
 }
 
 // This is a placeholder for future monetization logic.
 // Subscription state is deliberately simple for now because billing is not implemented yet.
 export function setSubscriptionState(state: SubscriptionState): void {
-  writeAppState("subscriptionState", state);
+  writeAppState(getScopedAppStateKey("subscriptionState"), state);
 }
 
 export function getSubscriptionState(): SubscriptionState {
-  return readAppState<SubscriptionState>("subscriptionState", "free");
+  return readAppState<SubscriptionState>(getScopedAppStateKey("subscriptionState"), "free");
 }
 
 // Lets the app know whether it should show first-run onboarding behavior once.
 // The first-launch flag flips after the first read.
 export function consumeFirstLaunch(): boolean {
-  const firstLaunch = readAppState<boolean>("firstLaunch", true);
-  writeAppState("firstLaunch", false);
+  const key = getScopedAppStateKey("firstLaunch");
+  const firstLaunch = readAppState<boolean>(key, true);
+  writeAppState(key, false);
   return firstLaunch;
 }
 

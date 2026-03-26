@@ -1,5 +1,6 @@
 // This is the heart of the product.
 // Every UI or script should ideally talk only to this file.
+import { AccessControlError, requireAuthenticatedViewer, requirePremiumViewer } from "../access";
 import { detectImageIntent, generateImage } from "../ai";
 import {
   cacheGet,
@@ -11,6 +12,7 @@ import {
 } from "../cache";
 import { getClient } from "../clients";
 import {
+  AI_PROVIDER_SETTINGS,
   AI_SETTINGS,
   CACHE_SETTINGS,
   ENGINE_CONSTANTS,
@@ -73,6 +75,18 @@ function logHandledSourceFailure(label: string, error: unknown): void {
   }
 
   console.warn(`[engine] ${label} failed: ${formatErrorMessage(error)}`);
+}
+
+function isAccessControlFailure(error: unknown): boolean {
+  if (error instanceof AccessControlError) {
+    return true;
+  }
+
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message === "authentication_required" || error.message === "subscription_required";
 }
 
 // Whenever we return real remote results, quietly save thumbnails/previews in the background.
@@ -151,6 +165,22 @@ function buildImageQuery(query: string, options: ImageRequestOptions = {}, inten
     payload.negativePrompt = options.negativePrompt;
   }
 
+  if (options.provider !== undefined) {
+    payload.provider = options.provider;
+  }
+
+  if (options.fallbackChain && options.fallbackChain.length > 0) {
+    payload.fallbackChain = [...options.fallbackChain];
+  }
+
+  if (options.persist !== undefined) {
+    payload.persist = options.persist;
+  }
+
+  if (options.userId !== undefined) {
+    payload.userId = options.userId;
+  }
+
   return payload;
 }
 
@@ -175,16 +205,45 @@ function buildAiRequest(input: SearchQuery): AiGenerationRequest {
   const request: AiGenerationRequest = {
     prompt: input.query.trim(),
     category: resolveCategory(input.query, input.category),
-    model: input.model?.trim() || AI_SETTINGS.defaultModel,
-    size: input.size?.trim() || AI_SETTINGS.defaultSize,
-    quality: input.quality?.trim() || AI_SETTINGS.defaultQuality,
-    style: input.style?.trim() || AI_SETTINGS.defaultStyle,
-    count: Math.min(Math.max(1, input.perPage ?? 1), AI_SETTINGS.maxImagesPerRequest),
-    fallbackChain: [...AI_SETTINGS.fallbackChain]
+    count: Math.min(Math.max(1, input.perPage ?? 1), AI_SETTINGS.maxImagesPerRequest)
   };
+
+  if (input.provider !== undefined) {
+    request.provider = input.provider;
+  }
+
+  if (input.fallbackChain && input.fallbackChain.length > 0) {
+    request.fallbackChain = [...input.fallbackChain];
+  } else if (!input.provider) {
+    request.fallbackChain = [...AI_SETTINGS.fallbackChain];
+  }
+
+  if (input.model?.trim()) {
+    request.model = input.model.trim();
+  }
+
+  if (input.size?.trim()) {
+    request.size = input.size.trim();
+  }
+
+  if (input.quality?.trim()) {
+    request.quality = input.quality.trim();
+  }
+
+  if (input.style?.trim()) {
+    request.style = input.style.trim();
+  }
 
   if (input.negativePrompt?.trim()) {
     request.negativePrompt = input.negativePrompt.trim();
+  }
+
+  if (input.persist !== undefined) {
+    request.persist = input.persist;
+  }
+
+  if (input.userId?.trim()) {
+    request.userId = input.userId.trim();
   }
 
   return request;
@@ -193,15 +252,17 @@ function buildAiRequest(input: SearchQuery): AiGenerationRequest {
 // Generated-image cache keys must stay separate from search-result cache keys,
 // otherwise the same prompt could collide between "search" and "generate" modes.
 function generateAiCacheKey(request: AiGenerationRequest): string {
+  const provider = request.provider ?? AI_SETTINGS.defaultProvider;
+  const providerSettings = AI_PROVIDER_SETTINGS[provider];
   const signature = [
     request.prompt.trim().toLowerCase(),
     request.category.trim().toLowerCase(),
     request.provider?.trim().toLowerCase() || "",
     (request.fallbackChain ?? []).join(","),
-    request.model?.trim().toLowerCase() || AI_SETTINGS.defaultModel,
-    request.size?.trim().toLowerCase() || AI_SETTINGS.defaultSize,
-    request.quality?.trim().toLowerCase() || AI_SETTINGS.defaultQuality,
-    request.style?.trim().toLowerCase() || AI_SETTINGS.defaultStyle,
+    request.model?.trim().toLowerCase() || providerSettings.defaultModel.toLowerCase(),
+    request.size?.trim().toLowerCase() || providerSettings.defaultSize.toLowerCase(),
+    request.quality?.trim().toLowerCase() || providerSettings.defaultQuality.toLowerCase(),
+    request.style?.trim().toLowerCase() || providerSettings.defaultStyle.toLowerCase(),
     request.negativePrompt?.trim().toLowerCase() || "",
     String(request.count ?? 1)
   ].join("::");
@@ -239,9 +300,15 @@ function buildGeneratedWallpapers(response: AiGenerationResponse, request: AiGen
 // The generation pipeline mirrors the normal request pipeline, but intentionally skips the local bundle.
 // For now we only exact-request-cache generated images; we are not deciding long-term storage here yet.
 async function runGenerationPipeline(request: AiGenerationRequest): Promise<Wallpaper[]> {
+  const viewer = await requirePremiumViewer();
+  const effectiveRequest: AiGenerationRequest = {
+    ...request,
+    userId: viewer.user.id
+  };
+
   totalRequests += 1;
   const startedAt = Date.now();
-  const cacheKey = generateAiCacheKey(request);
+  const cacheKey = generateAiCacheKey(effectiveRequest);
   const cached = cacheGet(cacheKey);
 
   if (cached) {
@@ -249,8 +316,8 @@ async function runGenerationPipeline(request: AiGenerationRequest): Promise<Wall
     return decorateFavorites(cached.data);
   }
 
-  const response = await generateImage(request);
-  const wallpapers = buildGeneratedWallpapers(response, request);
+  const response = await generateImage(effectiveRequest);
+  const wallpapers = buildGeneratedWallpapers(response, effectiveRequest);
 
   if (wallpapers.length === 0) {
     throw new Error("AI generation produced no wallpapers.");
@@ -277,11 +344,13 @@ async function runPipeline(request: ApiClientRequest): Promise<Wallpaper[]> {
 
   // Second-fastest path: local bundle search.
   // This is what prevents repeat browsing from spending API quota.
-  const localResults = localBundleSearch(request.query, request.category, request.page, request.perPage);
-  if (localResults.length > 0) {
-    cacheSet(cacheKey, localResults, CACHE_SETTINGS.ttlMs, CACHE_SETTINGS.staleTtlMs);
-    cachedLatencies.push(Math.max(1, Date.now() - startedAt));
-    return decorateFavorites(localResults);
+  if (request.mode !== "daily") {
+    const localResults = localBundleSearch(request.query, request.category, request.page, request.perPage);
+    if (localResults.length > 0) {
+      cacheSet(cacheKey, localResults, CACHE_SETTINGS.ttlMs, CACHE_SETTINGS.staleTtlMs);
+      cachedLatencies.push(Math.max(1, Date.now() - startedAt));
+      return decorateFavorites(localResults);
+    }
   }
 
   // Only after exact cache and local DB do we spend remote quota.
@@ -362,6 +431,8 @@ async function runPipeline(request: ApiClientRequest): Promise<Wallpaper[]> {
 
 // Public search entry point used by category pages, free-form search, and future UI screens.
 async function search(query: string, category?: string, page = 1): Promise<Wallpaper[]> {
+  await requireAuthenticatedViewer();
+
   const options: ImageRequestOptions = {
     page
   };
@@ -388,6 +459,8 @@ async function generate(prompt: string, options: ImageRequestOptions = {}): Prom
 // detailed prompt -> AI generation
 // normal query -> existing provider search
 async function getImages(query: string, options: ImageRequestOptions = {}): Promise<Wallpaper[]> {
+  await requireAuthenticatedViewer();
+
   const payload = buildImageQuery(query, options, options.intent ?? AI_SETTINGS.defaultIntent);
   const intentDetection = detectImageIntent(payload.query, payload.intent ?? AI_SETTINGS.defaultIntent);
 
@@ -395,7 +468,7 @@ async function getImages(query: string, options: ImageRequestOptions = {}): Prom
     try {
       return await runGenerationPipeline(buildAiRequest(payload));
     } catch (error) {
-      if ((payload.intent ?? AI_SETTINGS.defaultIntent) === "generate") {
+      if ((payload.intent ?? AI_SETTINGS.defaultIntent) === "generate" || isAccessControlFailure(error)) {
         throw error;
       }
 
@@ -432,6 +505,8 @@ async function getWallpapers(query: string, category?: string, page = 1): Promis
 // Returns one themed set based on the current day so "featured" feels curated instead of random.
 // This is "featured" in the current backend sense: a rotating curated query set, not a true editorial CMS.
 async function getFeatured(): Promise<Wallpaper[]> {
+  await requireAuthenticatedViewer();
+
   const index = getDayOfYear() % FEATURED_ROTATION.length;
   const featured = FEATURED_ROTATION[index] ?? FEATURED_ROTATION[0];
 
@@ -447,6 +522,8 @@ async function getFeatured(): Promise<Wallpaper[]> {
 
 // Category browsing is just a specialized search with a generated default query.
 async function getByCategory(category: string, page = 1): Promise<Wallpaper[]> {
+  await requireAuthenticatedViewer();
+
   return runPipeline(
     buildRequest({
       query: getDefaultQueryForCategory(category),
@@ -461,6 +538,8 @@ async function getByCategory(category: string, page = 1): Promise<Wallpaper[]> {
 // and still benefits from the same routing, caching, and fallback behavior as search.
 // "Trending" is currently implemented as a smart generic search query.
 async function getTrending(page = 1): Promise<Wallpaper[]> {
+  await requireAuthenticatedViewer();
+
   return runPipeline(
     buildRequest({
       query: "trending wallpaper",
@@ -473,6 +552,8 @@ async function getTrending(page = 1): Promise<Wallpaper[]> {
 
 // Daily wallpaper prefers NASA APOD but still guarantees a result if NASA is unavailable.
 async function getDaily(): Promise<Wallpaper> {
+  await requireAuthenticatedViewer();
+
   const cacheKey = generateCacheKey("daily", "space", 1, "daily");
   const cached = cacheGet(cacheKey);
 

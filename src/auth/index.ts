@@ -501,6 +501,12 @@ export function isAuthenticated(): boolean {
   return Boolean(session && !isSessionExpired(session));
 }
 
+// Test helper for seeding or clearing a local auth session without going through
+// the live Supabase OTP flow.
+export function setAuthSessionForTests(session: SupabaseSession | null): SupabaseSession | null {
+  return persistSession(session);
+}
+
 export const auth = {
   sendEmailOtp,
   verifyEmailOtp,
@@ -510,7 +516,8 @@ export const auth = {
   getAuthenticatedUser,
   clearAuthSession,
   signOutAuth,
-  isAuthenticated
+  isAuthenticated,
+  setAuthSessionForTests
 };
 
 export * from "./config";

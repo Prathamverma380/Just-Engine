@@ -31,6 +31,23 @@ const OFFLINE_BUNDLE_SEEDS = [
     { id: "seasonal_spring_blush", category: "seasonal", title: "Spring Blush", description: "Soft seasonal bloom tones for spring browsing.", tags: ["seasonal", "spring", "flowers", "light"], colors: ["#fbcfe8", "#86efac"] }
 ];
 let cachedBundle = null;
+const SEARCH_STOP_WORDS = new Set([
+    "a",
+    "an",
+    "and",
+    "day",
+    "for",
+    "image",
+    "in",
+    "of",
+    "on",
+    "photo",
+    "picture",
+    "the",
+    "to",
+    "wallpaper",
+    "with"
+]);
 function cloneWallpaper(wallpaper) {
     return {
         ...wallpaper,
@@ -51,6 +68,15 @@ function getBundleSearchText(wallpaper) {
     ]
         .join(" ")
         .toLowerCase();
+}
+function tokenizeSearchQuery(query) {
+    const rawTokens = query
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
+    const meaningfulTokens = rawTokens.filter((token) => token.length > 2 && !SEARCH_STOP_WORDS.has(token));
+    return meaningfulTokens.length > 0 ? meaningfulTokens : rawTokens;
 }
 function getBundledOfflineWallpapers() {
     if (!cachedBundle) {
@@ -83,11 +109,7 @@ function getBundledOfflineWallpapers() {
 // The shipped bundle uses the same category and token matching rules as the local image library.
 function searchBundledOfflineWallpapers(request) {
     const normalizedCategory = request.category.trim().toLowerCase() || "all";
-    const tokens = request.query
-        .trim()
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(Boolean);
+    const tokens = tokenizeSearchQuery(request.query);
     const candidates = getBundledOfflineWallpapers().filter((wallpaper) => normalizedCategory === "all" ? true : wallpaper.category.toLowerCase() === normalizedCategory);
     const scored = candidates
         .map((wallpaper) => {
@@ -102,7 +124,7 @@ function searchBundledOfflineWallpapers(request) {
         if (tokens.length === 0) {
             return true;
         }
-        return entry.score > 0 || normalizedCategory !== "all";
+        return entry.score > 0;
     })
         .sort((left, right) => right.score - left.score || right.wallpaper.cachedAt - left.wallpaper.cachedAt);
     const start = Math.max(0, (request.page - 1) * request.perPage);

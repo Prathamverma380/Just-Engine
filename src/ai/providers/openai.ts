@@ -35,6 +35,24 @@ const capabilities: AiProviderCapabilities = {
   supportsSupabasePersistence: true
 };
 
+function isDallE3Model(model: string): boolean {
+  return model.trim().toLowerCase() === "dall-e-3";
+}
+
+function resolveOpenAiImageCount(model: string, count: number | undefined): number {
+  const clamped = clampImageCount(count, capabilities.maxImagesPerRequest);
+  return isDallE3Model(model) ? 1 : clamped;
+}
+
+function resolveOpenAiQuality(model: string, quality: string): string {
+  if (!isDallE3Model(model)) {
+    return quality;
+  }
+
+  const normalized = quality.trim().toLowerCase();
+  return normalized === "hd" || normalized === "high" ? "hd" : "standard";
+}
+
 export const openAiProvider: AiProviderAdapter = {
   name: "openai",
   capabilities,
@@ -100,8 +118,10 @@ export const openAiProvider: AiProviderAdapter = {
                   context.resolvedStyle
                 ),
                 size: context.resolvedSize,
-                quality: context.resolvedQuality,
-                n: clampImageCount(context.request.count, capabilities.maxImagesPerRequest)
+                // DALL-E 3 still uses the Images API, but it accepts `standard/hd`
+                // quality and supports only a single image per request.
+                quality: resolveOpenAiQuality(context.resolvedModel, context.resolvedQuality),
+                n: resolveOpenAiImageCount(context.resolvedModel, context.request.count)
               })
             },
             context.timeoutMs

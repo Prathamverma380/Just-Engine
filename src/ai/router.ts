@@ -19,7 +19,7 @@ function uniqueProviders(providers: AiProviderName[]): AiProviderName[] {
 // 3. otherwise use the global configured default chain
 function buildRequestedChain(request: AiGenerationRequest): AiProviderName[] {
   if (request.provider) {
-    const fallback = request.fallbackChain?.filter((provider) => provider !== request.provider) ?? AI_SETTINGS.fallbackChain;
+    const fallback = request.fallbackChain?.filter((provider) => provider !== request.provider) ?? [];
     return uniqueProviders([request.provider, ...fallback]);
   }
 
@@ -92,7 +92,6 @@ export function markAiAttempt(
     attempted: decision.attempted.includes(provider) ? decision.attempted : [...decision.attempted, provider]
   };
 }
-
 
 
 

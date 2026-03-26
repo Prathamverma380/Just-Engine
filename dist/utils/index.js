@@ -33,8 +33,24 @@ exports.cacheWallpaperThumbnail = cacheWallpaperThumbnail;
 exports.getCachedThumbnailPath = getCachedThumbnailPath;
 exports.cacheWallpaperBundle = cacheWallpaperBundle;
 exports.setAsWallpaper = setAsWallpaper;
+const access_1 = require("../access");
+const auth_1 = require("../auth");
 const persistence_1 = require("../persistence");
 const watermark_1 = require("../watermark");
+function assertSynchronousViewerAccess() {
+    if (!(0, auth_1.getAuthSession)()) {
+        throw new Error("authentication_required");
+    }
+}
+function assertSynchronousAiAccess(wallpaper) {
+    if (wallpaper.source !== "ai") {
+        return;
+    }
+    const entitlement = (0, access_1.getCachedViewerEntitlement)();
+    if (!(0, access_1.isPremiumEntitlement)(entitlement)) {
+        throw new Error("subscription_required");
+    }
+}
 // Human-friendly byte formatting for logs and future UI surfaces.
 function formatBytes(bytes) {
     if (bytes <= 0) {
@@ -296,14 +312,7 @@ function buildWallpaper(input) {
         category: input.category,
         isFavorite: false,
         downloadedAt: null,
-        cachedAt: input.cachedAt ?? Date.now(),
-        delivery: {
-            tier: "premium",
-            mode: "original",
-            isWatermarked: false,
-            watermarkVersion: null,
-            transformedVariants: []
-        }
+        cachedAt: input.cachedAt ?? Date.now()
     };
 }
 // Some providers overlap heavily, so we dedupe by source + sourceId before returning results.
@@ -432,6 +441,8 @@ function getBestWallpaperUrl(wallpaper, deviceWidth = 1080, deviceHeight = 1920)
 }
 // Converts a wallpaper into something a sharing layer can use later.
 function buildSharePayload(wallpaper) {
+    assertSynchronousViewerAccess();
+    assertSynchronousAiAccess(wallpaper);
     return {
         title: wallpaper.metadata.description,
         text: `${wallpaper.metadata.description} by ${wallpaper.photographer.name}`,
@@ -453,6 +464,10 @@ function inferExtension(url, contentType) {
 }
 // Downloads the chosen wallpaper variant into a local folder for offline use or later OS integration.
 async function downloadWallpaper(wallpaper, options = {}) {
+    await (0, access_1.requireAuthenticatedViewer)();
+    if (wallpaper.source === "ai") {
+        await (0, access_1.requirePremiumViewer)();
+    }
     const fs = require("fs");
     const path = require("path");
     const variant = options.variant ?? "full";

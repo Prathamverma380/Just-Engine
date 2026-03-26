@@ -19,6 +19,23 @@ const persistence_1 = require("../persistence");
 // The in-memory layer is the fastest path.
 // The SQLite layer is the durable path.
 const cacheStore = new Map();
+const SEARCH_STOP_WORDS = new Set([
+    "a",
+    "an",
+    "and",
+    "day",
+    "for",
+    "image",
+    "in",
+    "of",
+    "on",
+    "photo",
+    "picture",
+    "the",
+    "to",
+    "wallpaper",
+    "with"
+]);
 // Basic counters power health/stats and help us reason about whether the cache is actually doing useful work.
 let hits = 0;
 let misses = 0;
@@ -175,6 +192,15 @@ function buildSearchText(wallpaper) {
         .join(" ")
         .toLowerCase();
 }
+function tokenizeSearchQuery(query) {
+    const rawTokens = query
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
+    const meaningfulTokens = rawTokens.filter((token) => token.length > 2 && !SEARCH_STOP_WORDS.has(token));
+    return meaningfulTokens.length > 0 ? meaningfulTokens : rawTokens;
+}
 // Persists normalized wallpapers into the local SQLite bundle so future searches can be served locally.
 // Any normalized wallpaper can be indexed here so later searches can be answered locally.
 function localBundleUpsert(wallpapers) {
@@ -208,8 +234,7 @@ function localBundleSearch(query, category, page, perPage) {
         return [];
     }
     const normalizedCategory = category.trim().toLowerCase() || "all";
-    const normalizedQuery = query.trim().toLowerCase();
-    const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+    const tokens = tokenizeSearchQuery(query);
     const rows = db.prepare(`
     SELECT payload
     FROM local_bundle
@@ -233,7 +258,7 @@ function localBundleSearch(query, category, page, perPage) {
         if (tokens.length === 0) {
             return true;
         }
-        return entry.score > 0 || normalizedCategory !== "all";
+        return entry.score > 0;
     })
         .sort((left, right) => right.score - left.score || right.wallpaper.cachedAt - left.wallpaper.cachedAt);
     const start = Math.max(0, (page - 1) * perPage);

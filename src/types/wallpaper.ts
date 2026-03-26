@@ -38,6 +38,7 @@ export type RemoteWallpaperSource = (typeof REMOTE_WALLPAPER_SOURCES)[number];
 export type WallpaperCategory = (typeof WALLPAPER_CATEGORIES)[number];
 // `auto` lets the engine decide whether the user asked for search results or a generated image.
 export type ImageIntent = "search" | "generate" | "auto";
+export type AiImageProvider = "openai" | "nano_banana" | "silicon_flow";
 export type RequestMode = "search" | "featured" | "daily" | "category";
 export type WallpaperVariant = "thumbnail" | "preview" | "full" | "original";
 export type WallpaperDeliveryTier = "free" | "premium";
@@ -104,11 +105,15 @@ export interface SearchQuery {
   mode?: RequestMode;
   // These fields are only relevant for the AI generation path.
   intent?: ImageIntent;
+  provider?: AiImageProvider;
+  fallbackChain?: AiImageProvider[];
   model?: string;
   size?: string;
   quality?: string;
   style?: string;
   negativePrompt?: string;
+  persist?: boolean;
+  userId?: string;
 }
 
 // This is the fully prepared request shape that internal clients actually consume.

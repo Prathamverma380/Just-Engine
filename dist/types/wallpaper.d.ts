@@ -5,6 +5,7 @@ export type WallpaperSource = (typeof WALLPAPER_SOURCES)[number];
 export type RemoteWallpaperSource = (typeof REMOTE_WALLPAPER_SOURCES)[number];
 export type WallpaperCategory = (typeof WALLPAPER_CATEGORIES)[number];
 export type ImageIntent = "search" | "generate" | "auto";
+export type AiImageProvider = "openai" | "nano_banana" | "silicon_flow";
 export type RequestMode = "search" | "featured" | "daily" | "category";
 export type WallpaperVariant = "thumbnail" | "preview" | "full" | "original";
 export type WallpaperDeliveryTier = "free" | "premium";
@@ -55,11 +56,15 @@ export interface SearchQuery {
     perPage?: number;
     mode?: RequestMode;
     intent?: ImageIntent;
+    provider?: AiImageProvider;
+    fallbackChain?: AiImageProvider[];
     model?: string;
     size?: string;
     quality?: string;
     style?: string;
     negativePrompt?: string;
+    persist?: boolean;
+    userId?: string;
 }
 export interface ApiClientRequest {
     query: string;

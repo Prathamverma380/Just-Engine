@@ -8,6 +8,8 @@ import {
   type WallpaperSource,
   type WallpaperVariant
 } from "../types/wallpaper";
+import { getCachedViewerEntitlement, isPremiumEntitlement, requireAuthenticatedViewer, requirePremiumViewer } from "../access";
+import { getAuthSession } from "../auth";
 import { ensureDataDirectory } from "../persistence";
 import { type WallpaperDeliveryOptions, getDeliveredWallpaperUrl } from "../watermark";
 
@@ -17,6 +19,23 @@ declare const process:
       cwd?: () => string;
     }
   | undefined;
+
+function assertSynchronousViewerAccess(): void {
+  if (!getAuthSession()) {
+    throw new Error("authentication_required");
+  }
+}
+
+function assertSynchronousAiAccess(wallpaper: Wallpaper): void {
+  if (wallpaper.source !== "ai") {
+    return;
+  }
+
+  const entitlement = getCachedViewerEntitlement();
+  if (!isPremiumEntitlement(entitlement)) {
+    throw new Error("subscription_required");
+  }
+}
 
 // Human-friendly byte formatting for logs and future UI surfaces.
 export function formatBytes(bytes: number): string {
@@ -380,14 +399,7 @@ export function buildWallpaper(input: {
     category: input.category,
     isFavorite: false,
     downloadedAt: null,
-    cachedAt: input.cachedAt ?? Date.now(),
-    delivery: {
-      tier: "premium",
-      mode: "original",
-      isWatermarked: false,
-      watermarkVersion: null,
-      transformedVariants: []
-    }
+    cachedAt: input.cachedAt ?? Date.now()
   };
 }
 
@@ -539,6 +551,9 @@ export function getBestWallpaperUrl(wallpaper: Wallpaper, deviceWidth = 1080, de
 
 // Converts a wallpaper into something a sharing layer can use later.
 export function buildSharePayload(wallpaper: Wallpaper): SharePayload {
+  assertSynchronousViewerAccess();
+  assertSynchronousAiAccess(wallpaper);
+
   return {
     title: wallpaper.metadata.description,
     text: `${wallpaper.metadata.description} by ${wallpaper.photographer.name}`,
@@ -577,6 +592,11 @@ export async function downloadWallpaper(
     forceRefresh?: boolean;
   } = {}
 ): Promise<DownloadResult> {
+  await requireAuthenticatedViewer();
+  if (wallpaper.source === "ai") {
+    await requirePremiumViewer();
+  }
+
   const fs = require("fs");
   const path = require("path");
   const variant = options.variant ?? "full";

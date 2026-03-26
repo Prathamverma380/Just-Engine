@@ -59,7 +59,7 @@ function initialState(): AiProviderRuntimeState {
 const runtimeState: Record<AiProviderName, AiProviderRuntimeState> = {
   openai: initialState(),
   nano_banana: initialState(),
-  eleven_labs: initialState()
+  silicon_flow: initialState()
 };
 
 // Rolls counters forward when the current minute/hour/day/month changes.

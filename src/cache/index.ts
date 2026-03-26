@@ -9,6 +9,23 @@ import type { CacheEntry, CacheLookupResult, CacheStats, Wallpaper } from "../ty
 // The in-memory layer is the fastest path.
 // The SQLite layer is the durable path.
 const cacheStore = new Map<string, CacheEntry<Wallpaper[]>>();
+const SEARCH_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "day",
+  "for",
+  "image",
+  "in",
+  "of",
+  "on",
+  "photo",
+  "picture",
+  "the",
+  "to",
+  "wallpaper",
+  "with"
+]);
 
 // Basic counters power health/stats and help us reason about whether the cache is actually doing useful work.
 let hits = 0;
@@ -204,6 +221,17 @@ function buildSearchText(wallpaper: Wallpaper): string {
     .toLowerCase();
 }
 
+function tokenizeSearchQuery(query: string): string[] {
+  const rawTokens = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  const meaningfulTokens = rawTokens.filter((token) => token.length > 2 && !SEARCH_STOP_WORDS.has(token));
+
+  return meaningfulTokens.length > 0 ? meaningfulTokens : rawTokens;
+}
+
 // Persists normalized wallpapers into the local SQLite bundle so future searches can be served locally.
 // Any normalized wallpaper can be indexed here so later searches can be answered locally.
 export function localBundleUpsert(wallpapers: Wallpaper[]): void {
@@ -255,8 +283,7 @@ export function localBundleSearch(
   }
 
   const normalizedCategory = category.trim().toLowerCase() || "all";
-  const normalizedQuery = query.trim().toLowerCase();
-  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  const tokens = tokenizeSearchQuery(query);
   const rows = db.prepare(`
     SELECT payload
     FROM local_bundle
@@ -285,7 +312,7 @@ export function localBundleSearch(
         return true;
       }
 
-      return entry.score > 0 || normalizedCategory !== "all";
+      return entry.score > 0;
     })
     .sort((left, right) => right.score - left.score || right.wallpaper.cachedAt - left.wallpaper.cachedAt);
 
